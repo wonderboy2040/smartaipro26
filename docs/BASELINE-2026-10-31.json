@@ -1,0 +1,61 @@
+{
+  "schema": "smartaipro-baseline/1",
+  "frozenAt": "2026-10-31T18:37:38.147Z",
+  "version": "21.32.0",
+  "gitSha": "4826451",
+  "tag": "v21.32.0-freeze",
+  "dataSource": "NO-LEDGER-DATA (fresh install — re-run after ≥2 weeks of board scans)",
+  "windowDays": 30,
+  "ledgerRows": 0,
+  "scorecardV2": {
+    "version": 2,
+    "windowDays": 30,
+    "generatedAt": 1793471858146,
+    "overall": {
+      "n": 0,
+      "gate": {
+        "state": "insufficient",
+        "decisionGrade": false,
+        "reviewable": false
+      },
+      "hitTp1Pct": null,
+      "hitTp1WilsonCI": null,
+      "hitTp2Pct": null,
+      "stopRatePct": null,
+      "timeoutRatePct": null,
+      "expectancyR": null,
+      "expectancyBootstrapCI": null,
+      "profitFactor": null,
+      "medianMfeR": null,
+      "medianMaeR": null,
+      "ece": null,
+      "brier": null,
+      "avgTimeToTp1Min": null,
+      "stabilityPct": null
+    },
+    "byTier": {},
+    "byDesk": {},
+    "byRegime": {},
+    "bySide": {},
+    "bySession": {},
+    "byTierRegime": {},
+    "totalScans": 0,
+    "resolvedCount": 0,
+    "pendingCount": 0,
+    "schemaVersionCoverage": {
+      "v2": 0,
+      "legacy": 0
+    },
+    "pWinCoveragePct": null,
+    "note": "Scorecard v2 — definitions frozen in docs/ACCURACY-DEFINITIONS.md. min-n gates: <30 insufficient, >=100 reviewable, >=150 decision-grade."
+  },
+  "legacyScorecard": {
+    "n": 0,
+    "directionHitRate": null,
+    "t1HitPct": null,
+    "avgR": null,
+    "wilsonLB": null,
+    "byTier": {}
+  },
+  "compareRule": "Har baad ka change (flag flip, feature, exit change) isi baseline ke overall + byTier slices se compare hoga. Promotion ke liye: lower 95% CI bound > 0 at n>=150 (KPI §6)."
+}

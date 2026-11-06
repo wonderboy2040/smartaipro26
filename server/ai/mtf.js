@@ -1,0 +1,975 @@
+// ============================================================
+// server/ai/mtf.js — v18.5 SUPER INTELLIGENCE MTF-6 ENGINE
+// ------------------------------------------------------------
+// Full 6-timeframe confluence analysis: 1m / 5m / 15m / 1h / 4h / 1d.
+// Every timeframe gets its own candle fetch + indicator stack
+// (EMA10/20/50, RSI, MACD, ADX, supertrend, ROC, volume) and a
+// directional vote; the engine then computes:
+//   • consensus (BULLISH / BEARISH / NEUTRAL)
+//   • weighted alignment score  -100 … +100  (HTF heavier: 1d ×3.0)
+//   • agreement ratio 0..1 (share of TF weight on the consensus side)
+//   • phase: TREND-ALIGNED / MIXED / RANGE
+//   • htfBias (1d+4h) and ltfTrigger (5m+1m) reads
+//   • timing quality (LTF exhaustion gate for the entry)
+//   • structureStop (15m swing beyond entry, ATR-buffered)
+//
+// Integration contract (used by signals.js board + deep paths):
+//   buildMTFSnapshot(symbol, market, { side, ltp })
+//     → snapshot | null (never throws; honest degrade when the
+//       candle sources are unreachable or too thin)
+//   mtfWire6Payload(snapshot)
+//     → the compact badge payload (sig.mtf) for the frontend
+//     MTFConfluenceBadge — carries all 6 TF chips + consensus.
+//
+// Cost discipline:
+//   • crypto candles ride data.js's TTL cache (1m 90s / 5m 120s /
+//     15m 3m / 1h+4h+1d 5m) with CoinDCX→Binance→Bybit fallback
+//   • INDIA candles: Yahoo v8 chart with per-TF TTL (1m 90s / 5m 2m /
+//     15m 2m / 1h 10m / 1d 30m; 4h resampled from 1h — zero extra call)
+//   • snapshot-level cache 90s per (symbol, market, side)
+//   • all 6 fetches fan out in parallel; a missing TF degrades to a
+//     "N/A" chip and is excluded from the vote (never blocks the board)
+// ============================================================
+import { fetchCoinDcxCandles, fetchBinanceKlines, isNseOpen } from './data.js';
+import { fetchFuturesCandles, futuresPairFor, isMetalsBase, fetchMetalsFapiCandles, fetchMetalsYahooCandles, fetchBinanceFutKlines } from './futures.js';
+import { computeIndicatorsFromCandles, atr as atrOf } from './lib/indicators.js';
+// v21.23.11 MIRROR-SHIELD: descending (time-mirrored) series → ascending
+// before ANY vote/resample/overlay consumes it.
+import { ensureAscending } from './lib/candles.js';
+// v21.23.5 CoinDCX Ultrafast WS candle overlay — the REST chain stays the
+// series anchor (official OHLCV + volume); the live forming bar tracks
+// the WS price books (~1s) instead of freezing for the REST TTL
+// (15m=180s · 1h/4h/1d=300s · India Yahoo 15m=120s). See cxWsCandles.js
+// for the live probe + domain-safety + zero-regression contract.
+import { cxSpotOverlayCandles, indiaOverlayCandles, cxFutOverlayCandles } from './cxWsCandles.js';
+
+const TFS = ['1m', '5m', '15m', '1h', '4h', '1d'];
+const TF_WEIGHT = { '1d': 3.0, '4h': 2.4, '1h': 1.8, '15m': 1.3, '5m': 1.0, '1m': 0.6 };
+
+const SNAP_TTL_MS = 90_000;
+const _snapCache = new Map(); // key → { at, snap }
+const SNAP_CACHE_MAX = 96;
+// v18.5 OFFLINE CIRCUIT BREAKER — when every candle source is down
+// (user offline / firewalled), 6 failed fetches per symbol per cycle
+// would add 8s+ of timeouts to EVERY board build. After 6 consecutive
+// degraded snapshots the engine opens the circuit for 10 minutes and
+// returns null instantly (the legacy 5m/15m/1h wire stays in charge).
+// v18.6.4: breaker ab PER-(market,symbol) hai — pehle module-global
+// streak tha, to 6 thin/delisted coins (ya ek Yahoo outage) SAARE
+// markets ke liye 10-min blackout khol dete the. Global breaker sirf
+// tab khulta hai jab 8+ DISTINCT symbols apne blackout me chale —
+// wo asli user-offline outage hai.
+const _mtfFailBySym = new Map(); // `${mkt}:${sym}` → { streak, at } (fresh degraded COMPUTES only)
+const _mtfSkipBySym = new Map(); // `${mkt}:${sym}` → skip-until epoch
+let _mtfSkipUntil = 0;
+const MTF_FAIL_OPEN = 6;         // per-symbol: 6 fresh degraded computes → 10m blackout
+const MTF_GLOBAL_DISTINCT = 8;   // distinct symbols failing ≥2x in 10m → global 10m (user-offline)
+const MTF_FAIL_WIN_MS = 10 * 60_000;
+
+/** v18.6.4 test hook — current breaker state. */
+export function _mtfBreakerState() {
+  return {
+    globalSkipUntil: _mtfSkipUntil,
+    symSkip: Object.fromEntries(_mtfSkipBySym),
+    failStreaks: Object.fromEntries(_mtfFailBySym),
+  };
+}
+
+/** Widespread-outage count: distinct symbols whose RECENT (10m) fresh
+ *  computes failed ≥2 times. Thin coins (1-2 failures) never count. */
+function _widespreadFailCount(now = Date.now()) {
+  let n = 0;
+  for (const e of _mtfFailBySym.values()) {
+    if ((e?.streak || 0) >= 2 && now - (e?.at || 0) < MTF_FAIL_WIN_MS) n++;
+  }
+  return n;
+}
+
+// per-TF Yahoo TTLs (INDIA path)
+const YF_TTL = { '1m': 90_000, '5m': 120_000, '15m': 120_000, '1h': 600_000, '4h': 600_000, '1d': 1_800_000 };
+const _yfCache = new Map();
+const YF_CACHE_MAX = 160;
+
+const YF_TICKER_MINI = {
+  NIFTY: '^NSEI', BANKNIFTY: '^NSEBANK', FINNIFTY: 'NIFTY_FIN_SERVICE.NS',
+  SENSEX: '^BSESN', INDIAVIX: '^INDIAVIX', TATAMOTORS: 'TMPV.NS',
+};
+
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const num = (v) => (Number.isFinite(v) ? v : null);
+
+/**
+ * Pure direction decision for the MTF vote — exported for regression tests.
+ * `score` is the pre-ADX vote; `activeDump`/`activePump` are the confirmed
+ * structure-aware reversal flags. In v2 a confirmed reversal keeps its
+ * direction even when a low ADX dilutes the amplitude below the 1.4
+ * threshold (strength still reflects the low conviction).
+ */
+export function __decideVoteDirection({ score = 0, adx = null, v2 = true, activeDump = false, activePump = false } = {}) {
+  const adxV = num(adx);
+  const trendAmp = adxV != null ? clamp(0.6 + adxV / 50, 0.6, 1.6) : 1.0;
+  const scaled = clamp(Number(score) * trendAmp, -4.5, 4.5);
+  const dirThreshold = v2 ? 1.4 : 0.9;
+  let dir = scaled >= dirThreshold ? 1 : scaled <= -dirThreshold ? -1 : 0;
+  if (v2 && activeDump) dir = -1;
+  else if (v2 && activePump) dir = 1;
+  return { dir, scaled, trendAmp };
+}
+
+// v21.23.15 MTF VOTE V2 flag — default ON (direction-accuracy fixes are the
+// shipped behaviour); set MTF_VOTE_V2=0 to restore the legacy vote instantly.
+export function mtfVoteV2Enabled() { return _mtfVoteV2Enabled(); }
+function _mtfVoteV2Enabled() {
+  const raw = String(process.env.MTF_VOTE_V2 ?? '').trim().toLowerCase();
+  if (!raw) return true;
+  return !['0', 'false', 'off', 'no', 'disabled', 'legacy'].includes(raw);
+}
+
+// ------------------------------------------------------------
+// Candle sources
+// ------------------------------------------------------------
+async function _yahooCandles(yh, interval, range) {
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yh)}?interval=${interval}&range=${range}`;
+    const r = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (WealthAI mtf6)' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const res = j?.chart?.result?.[0];
+    const ts = res?.timestamp;
+    const q = res?.indicators?.quote?.[0];
+    if (!Array.isArray(ts) || !q) return null;
+    const rows = [];
+    for (let i = 0; i < ts.length; i++) {
+      if (q.open?.[i] == null || q.close?.[i] == null) continue;
+      rows.push({
+        time: ts[i] * 1000,
+        open: q.open[i], high: q.high?.[i] ?? q.close[i], low: q.low?.[i] ?? q.close[i],
+        close: q.close[i], volume: q.volume?.[i] || 0,
+      });
+    }
+    return rows.length >= 40 ? rows : null;
+  } catch { return null; }
+}
+
+// v21.23.10 [STALE-DATA AGE GATE] — pure helper: Yahoo per-IP cache HTTP
+// 200 ke saath DAY-OLD intraday series de sakta hai (live-probe: NSE OPEN
+// session me bhi RELIANCE 15m last-bar 1456 min purana + fetchedAt=abhi).
+// Cache-TTL FETCH-time par hai, DATA-time par nahi → committees kal ki
+// bars par "fresh" vote marti thi. Ye gate stale ko pakadta hai; null
+// result v21.23.4 honest-degrade ladder (suppress + dataDegraded) me jaata
+// hai. Session-closed me purani session LEGITIMATE hai (gate inert) aur
+// daily bars by-definition stale hain (tf '1d' exempt).
+export function isStaleIntradaySeries(rows, tf, { sessionOpen = true, now = Date.now() } = {}) {
+  if (!Array.isArray(rows) || rows.length === 0) return false;
+  if (!sessionOpen) return false;
+  if (String(tf) === '1d') return false;
+  const tfMs = { '1m': 60_000, '5m': 300_000, '15m': 900_000, '1h': 3_600_000, '4h': 14_400_000 }[String(tf)] || 900_000;
+  const lastBarAt = Number(rows[rows.length - 1]?.time || 0);
+  if (!(lastBarAt > 0)) return false;
+  return now - lastBarAt > 3 * tfMs + 10 * 60_000;
+}
+
+async function _indiaCandles(symbol, tf, market = 'INDIA', { raw = false } = {}) {
+  const yh = market === 'GLOBALFUTURES'
+    ? String(symbol || '').toUpperCase()
+    : (YF_TICKER_MINI[symbol] || `${symbol}.NS`);
+  const key = `yf:${market}:${symbol}:${tf}`;
+  const hit = _yfCache.get(key);
+  const ttl = YF_TTL[tf] || 120_000;
+  // v21.23.5: the CACHE holds the RAW Yahoo series; the live-bar overlay
+  // (Groww liveFeed print) is applied per-READ so the forming bar never
+  // bakes a stale live close into the shared cache.
+  // v21.23.10 [NULL-MINI-TTL]: null payload 60s mini-TTL se serve hota hai
+  // — pehle ek transient Yahoo 429 poore TTL (1d=30min!) tak leg ko blank
+  // rakhta tha jabki Yahoo recover ho chuka hota (signals.js ka _ltfMiss
+  // pattern yahan missing tha).
+  if (hit && Date.now() - hit.at < (hit.payload == null ? 60_000 : ttl)) {
+    return raw ? hit.payload : (hit.payload == null ? null : indiaOverlayCandles(symbol, tf, hit.payload));
+  }
+  let out = null;
+  if (tf === '4h') {
+    // 4h resampled from the cached 1h series — zero extra Yahoo call.
+    // v21.23.9 [F1 — the overlay-bake fix]: pehle yahan OVERLAID 1h
+    // (`_indiaCandles(symbol,'1h')` ki return value overlay applied hoti
+    // thi) resample hota tha → baked-overlay 4h `_yfCache.set` me jaata
+    // tha — the file ke APNE v21.23.5 invariant ka violation. Ek
+    // fabricated/live tick wala 4h tail 10-min TTL tak (YF_TTL['4h'])
+    // cache-hit reads par freeze ho sakta tha (weight-2.4 4h MTF vote
+    // stale intrabar print padhta tha). Ab 1h RAW payload se resample —
+    // overlay sirf per-READ (neeche), cache hamesha RAW.
+    const base = await _indiaCandles(symbol, '1h', market, { raw: true });
+    out = base ? _resample(base, 240) : null;
+  } else {
+    const interval = tf === '1h' ? '60m' : tf;
+    const range = tf === '1m' ? '5d' : (tf === '5m' || tf === '15m') ? '1mo' : tf === '1h' ? '3mo' : '2y';
+    out = await _yahooCandles(yh, interval, range);
+  }
+  // v21.23.10 [STALE-DATA AGE GATE]: stale-last-bar intraday = null →
+  // v21.23.4 honest-degrade ladder (full-missing suppress + dataDegraded
+  // + banner) handle karta hai. NSE-closed me gate inert.
+  if (market === 'INDIA' && isStaleIntradaySeries(out, tf, { sessionOpen: isNseOpen() })) out = null;
+  _yfCache.set(key, { at: Date.now(), payload: out });
+  while (_yfCache.size > YF_CACHE_MAX) {
+    const k = _yfCache.keys().next().value;
+    if (k === undefined) break;
+    _yfCache.delete(k);
+  }
+  return raw ? out : indiaOverlayCandles(symbol, tf, out);
+}
+
+/** Bucket candles into `minutes`-wide bars (open/high/low/close/volume). */
+function _resample(candles, minutes) {
+  if (!Array.isArray(candles) || candles.length < 2) return null;
+  // v21.23.11 [MIRROR-SHIELD L2]: resampler ko descending series
+  // milti thi to buckets bhi mirrored ban te the — entry pe seedha karo.
+  candles = ensureAscending(candles);
+  const out = [];
+  let bucket = null;
+  const widthMs = minutes * 60_000;
+  for (const c of candles) {
+    const bt = Math.floor(Number(c.time) / widthMs) * widthMs;
+    if (!bucket || bucket.time !== bt) {
+      if (bucket) out.push(bucket);
+      bucket = { time: bt, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume || 0 };
+    } else {
+      bucket.high = Math.max(bucket.high, c.high);
+      bucket.low = Math.min(bucket.low, c.low);
+      bucket.close = c.close;
+      bucket.volume += c.volume || 0;
+    }
+  }
+  if (bucket) out.push(bucket);
+  return out.length >= 30 ? out : null;
+}
+
+// v21.23.10 [METALS-LEGS]: shared metals candle chain (fapi XAUUSDT/XAGUSDT
+// klines → Yahoo COMEX GC=F/SI=F). Per-TF VOTES scale-invariant hain isliye
+// anchor-rescale is layer par zaroori nahi (plan path rawTfCandlesUsdt me
+// ltp-anchor rescale hota hai).
+async function _metalsCandlesFor(base, tf) {
+  const res = FUT_TF_RES[String(tf || '15m').toLowerCase()] || '15';
+  const fapi = await fetchMetalsFapiCandles(base, res, 240).catch(() => null);
+  if (Array.isArray(fapi) && fapi.length >= 30) return cxFutOverlayCandles(base, tf, fapi);
+  const comex = await fetchMetalsYahooCandles(base, res, 240).catch(() => null);
+  if (Array.isArray(comex) && comex.length >= 30) return cxFutOverlayCandles(base, tf, comex);
+  return null;
+}
+
+async function _candlesFor(symbol, market, tf) {
+  try {
+    if (market === 'CRYPTO' || market === 'FUTURES') {
+      // strip only namespace markers (FUT_/GLOB_) — a leading "B" is part
+      // of real tickers (BTC/BNB!) and must NEVER be eaten
+      const base = String(symbol || '').toUpperCase().replace(/^(FUT_|GLOB_)/, '');
+      // v21.23.10 [METALS-LEGS]: raw 'CRYPTO'/'FUTURES' market string bhi
+      // metals base ho sakta hai (agent/wire6 callers normalize nahi karte)
+      // — unhe bhi metals chain par route karo.
+      if (isMetalsBase(base)) return await _metalsCandlesFor(base, tf);
+      // v18.5: the full chain the board uses — CoinDCX INR first, then
+      // Binance/Bybit USDT klines (public, geo-robust). Per-TF VOTES are
+      // scale-invariant (EMA/RSI/MACD/ADX are relative); the structure
+      // stop converts itself via the close-ratio, so a USDT-sourced
+      // candle set can still price an INR stop correctly.
+      const c = await fetchCoinDcxCandles(base, tf, { noCache: false }).catch(() => null);
+      // v21.23.5: CoinDCX leg ab ULTRAFAST — WS spot book ka live INR print
+      // last bar pe overlay hota hai (candles official REST series hi rehte
+      // hain). Binance USDT fallback pe overlay NAHI (cross-domain risk —
+      // USDT candles ko INR tick kabhi nahi milega, v20.9.3 lesson).
+      if (Array.isArray(c) && c.length >= 30) return cxSpotOverlayCandles(base, tf, c);
+      return await fetchBinanceKlines(base, tf).catch(() => null);
+    }
+    if (market === 'METALS') {
+      // v21.23.10 [METALS-LEGS]: _candlesFor me METALS branch KABHI tha hi
+      // nahi — XAU/XAG 'INDIA' default me gir kar 'XAU.NS' Yahoo nonsense
+      // fetch karte the. Ab metals chain (fapi → COMEX).
+      const base = String(symbol || '').toUpperCase().replace(/^(FUT_|GLOB_)/, '');
+      return await _metalsCandlesFor(base, tf);
+    }
+    if (market === 'GLOBALFUTURES') {
+      // US equity perps (GLOB_ domain) — Yahoo equity series
+      const sym = String(symbol || '').toUpperCase().replace(/^GLOB_/, '');
+      return await _indiaCandles(sym, tf, 'GLOBALFUTURES');
+    }
+    return await _indiaCandles(symbol, tf, 'INDIA');
+  } catch { return null; }
+}
+
+// ------------------------------------------------------------
+// Per-TF vote
+// ------------------------------------------------------------
+function _tfVote(candles, tf) {
+  // v21.23.11 [MIRROR-SHIELD L2]: per-TF vote entry — descending
+  // (time-mirrored) series kabhi vote nahi karegi (zero-copy jab asc).
+  candles = ensureAscending(candles);
+  const li = computeIndicatorsFromCandles(candles);
+  if (!li) return null;
+  const last = candles[candles.length - 1];
+  const close = Number(last?.close) || li.ltp;
+  let score = 0;
+  const ema10 = num(li.ema10), ema20 = num(li.ema20), ema50 = num(li.ema50);
+  // v21.19.0: when live close has crossed against EMA20, slow EMA20-vs-EMA50
+  // stack lags the turn — reduce stack weight so broken structure does not
+  // keep voting the stale direction.
+  if (ema20 != null && ema50 != null) {
+    const stackAlignedWithPrice = (ema20 > ema50 && close >= ema20) || (ema20 < ema50 && close <= ema20);
+    const stackW = stackAlignedWithPrice ? 1.1 : 0.3;
+    score += ema20 > ema50 ? stackW : ema20 < ema50 ? -stackW : 0;
+  }
+  if (ema10 != null) score += close > ema10 ? 0.7 : close < ema10 ? -0.7 : 0;
+  if (ema20 != null) score += close > ema20 ? 0.8 : close < ema20 ? -0.8 : 0;
+  if (ema50 != null) score += close > ema50 ? 0.5 : close < ema50 ? -0.5 : 0;
+  const rsiV = num(li.rsi);
+  if (rsiV != null) score += rsiV > 55 ? 0.8 : rsiV < 45 ? -0.8 : 0;
+  const v2 = _mtfVoteV2Enabled();
+  const mac = li.macd && typeof li.macd === 'object' ? li.macd : null;
+  const macSlope = mac && num(mac.histSlope) != null ? num(mac.histSlope) : 0;
+  if (mac && num(mac.macd) != null && num(mac.signal) != null) {
+    // Equal MACD/signal is genuinely neutral in v2 — the old `macd > signal ?
+    // bull : bear` branch voted BEAR on a flat tape (0 > 0 === false).
+    // MTF_VOTE_V2=0 is documented as an exact legacy escape hatch, so keep the
+    // old flat-tape behaviour there instead of silently changing legacy too.
+    const macBull = mac.macd > mac.signal;
+    const macBear = mac.macd < mac.signal;
+    if (v2) {
+      if (macBull || macBear) {
+        const slopeAligned = (macBull && macSlope >= 0) || (macBear && macSlope <= 0);
+        const macW = slopeAligned ? 1.0 : 0.35;
+        score += macBull ? macW : -macW;
+      }
+    } else {
+      const slopeAligned = (macBull && macSlope >= 0) || (macBear && macSlope <= 0);
+      const macW = slopeAligned ? 1.0 : 0.35;
+      score += macBull ? macW : -macW; // legacy: equality fell to the bear branch
+    }
+  }
+  const sup = li.supertrend && typeof li.supertrend === 'object' ? li.supertrend : null;
+  if (sup && Number.isFinite(sup.direction)) score += sup.direction * 0.7;
+  const rocV = num(li.roc);
+  if (rocV != null) score += rocV > 0 ? 0.5 : rocV < 0 ? -0.5 : 0;
+  const n = candles.length;
+  const roc3 = n >= 4 && Number(candles[n - 4]?.close) > 0
+    ? ((close - Number(candles[n - 4].close)) / Number(candles[n - 4].close)) * 100
+    : 0;
+
+  // ---- v21.23.15 MTF VOTE V2 -------------------------------------------
+  // Direction accuracy fixes (behind MTF_VOTE_V2, default ON):
+  //  1. 3-bar momentum is ATR-NORMALIZED (mom3Atr = price move / ATR), so a
+  //     "big" 0.08% move on a quiet 1m chart no longer counts the same as an
+  //     equally-sized move on a volatile 1d chart.
+  //  2. 2-bar CONTEXT HYSTERESIS: a single-bar spike that disagrees with the
+  //     prior bar gets no momentum vote (chop guard), instead of flipping the
+  //     whole timeframe.
+  //  3. Reversal guard is STRUCTURE-AWARE: it needs a swing break, aligned
+  //     2-bar context and material ATR momentum — not just two EMA crosses.
+  //  4. Direction threshold 1.4 (was 0.9) and strength capped at 60 when the
+  //     vote fights the EMA20/50 + Supertrend structure.
+  const atrV = num(li.atr);
+  const mom3Base = n >= 4 ? Number(candles[n - 4]?.close) : NaN;
+  const mom3Atr = (v2 && atrV > 0 && Number.isFinite(mom3Base)) ? (close - mom3Base) / atrV : null;
+  const prevClose = n >= 2 ? Number(candles[n - 2]?.close) : null;
+  const prev2Close = n >= 3 ? Number(candles[n - 3]?.close) : null;
+  const context2 = (v2 && prevClose > 0 && prev2Close > 0)
+    ? (close > prevClose && prevClose > prev2Close ? 1 : close < prevClose && prevClose < prev2Close ? -1 : 0)
+    : 0;
+  if (v2 && mom3Atr != null) {
+    const momW = clamp(mom3Atr * 0.55, -1.3, 1.3);
+    if (context2 === 0) score += momW * 0.5;                  // ambiguous tape → half vote
+    else if ((momW > 0) === (context2 > 0)) score += momW;    // 2-bar + 3-bar agree
+    // conflicting context → single-bar spike: no momentum vote
+  } else if (!v2) {
+    if (roc3 > 0.08) score += 0.7;
+    else if (roc3 < -0.08) score -= 0.7;
+  }
+
+  // Structure reference used by both the reversal guard and the cap.
+  const recent = v2 ? candles.slice(-13, -1) : [];
+  const swingLow = recent.length ? Math.min(...recent.map(c => Number(c.low)).filter(Number.isFinite)) : null;
+  const swingHigh = recent.length ? Math.max(...recent.map(c => Number(c.high)).filter(Number.isFinite)) : null;
+  const brokeLow = swingLow != null && Number.isFinite(swingLow) && close < swingLow;
+  const brokeHigh = swingHigh != null && Number.isFinite(swingHigh) && close > swingHigh;
+  const macOpposesDump = (mac && num(mac.hist) < 0) || macSlope < 0;
+  const macSupportsPump = (mac && num(mac.hist) > 0) || macSlope > 0;
+
+  // v21.19.0 LIVE REVERSAL GUARD (v2: structure-aware) — an active dump must
+  // never vote +1 just because lagging EMA50/Supertrend still point up.
+  const activeDump = v2
+    ? (ema10 != null && ema20 != null && close < ema10 && close < ema20
+        && brokeLow && context2 < 0 && mom3Atr != null && mom3Atr <= -0.35 && macOpposesDump)
+    : (ema10 != null && ema20 != null && close < ema10 && close < ema20 && roc3 < -0.08 && macOpposesDump);
+  const activePump = v2
+    ? (ema10 != null && ema20 != null && close > ema10 && close > ema20
+        && brokeHigh && context2 > 0 && mom3Atr != null && mom3Atr >= 0.35 && macSupportsPump)
+    : (ema10 != null && ema20 != null && close > ema10 && close > ema20 && roc3 > 0.08 && macSupportsPump);
+  if (activeDump && score > -1.4) score = -1.8;
+  if (activePump && score < 1.4) score = 1.8;
+
+  const adxObj = li.adx && typeof li.adx === 'object' ? num(li.adx.adx) : null;
+  const adxV = adxObj != null ? adxObj : num(li.adx);
+  const { dir, scaled } = __decideVoteDirection({ score, adx: adxV, v2, activeDump, activePump });
+
+  // Structure: EMA20/50 stack primary, Supertrend fallback. A vote against
+  // structure is allowed (reversals trade) but two conditions apply:
+  //   1. it is only PUBLISHED when the reversal is confirmed (active pump/
+  //      dump) AND price has closed beyond EMA50 in the vote direction.
+  //      Without this, a ~1% counter-trend bounce inside a clean downtrend
+  //      breaks a 13-bar swing, forces the reversal direction, and flips the
+  //      timeframe to +1 while the EMA20/50 stack (and price vs EMA50) still
+  //      say the trend is intact.
+  //   2. when it IS published, strength stays capped at 60 so the board/
+  //      weighting never treats it as a full-conviction trend read.
+  const supDir = sup && Number.isFinite(sup.direction) ? Math.sign(sup.direction) : 0;
+  const structureDir = (ema20 != null && ema50 != null)
+    ? (ema20 > ema50 ? 1 : ema20 < ema50 ? -1 : 0)
+    : supDir;
+  const structureConflict = v2 && dir !== 0 && structureDir !== 0 && dir !== structureDir;
+  const reversalConfirmed = dir > 0 ? activePump : dir < 0 ? activeDump : false;
+  const closeBeyondEma50 = ema50 == null
+    ? false
+    : dir > 0 ? close > ema50 : dir < 0 ? close < ema50 : false;
+  // Counter-structure votes are neutral (no board weight) until the reversal
+  // proves itself beyond EMA50. A missing EMA50 is treated as unconfirmed —
+  // conservative by design (the legacy escape hatch still publishes it).
+  const counterStructureSuppressed = structureConflict && !(reversalConfirmed && closeBeyondEma50);
+  const voteDir = counterStructureSuppressed ? 0 : dir;
+  const rawStrength = Math.round(clamp(Math.abs(scaled) / 4.5, 0, 1) * 100);
+  const strength = counterStructureSuppressed
+    ? 0
+    : structureConflict ? Math.min(rawStrength, 60) : rawStrength;
+  const noteBits = [];
+  if (ema20 != null && ema50 != null) noteBits.push(close >= ema20 && ema20 > ema50 ? 'EMA bull' : close <= ema20 && ema20 < ema50 ? 'EMA bear' : close >= ema20 ? 'EMA reclaim' : 'EMA break');
+  if (rsiV != null) noteBits.push(`RSI ${Math.round(rsiV)}`);
+  if (adxV != null) noteBits.push(`ADX ${Math.round(adxV)}`);
+  if (mac && num(mac.hist) != null) noteBits.push(mac.hist > 0 ? 'MACD+' : 'MACD-');
+  if (v2 && structureConflict) {
+    const vetoWhy = ema50 == null ? 'EMA50 unavailable' : !closeBeyondEma50 ? 'price not beyond EMA50' : 'reversal unconfirmed';
+    noteBits.push(counterStructureSuppressed ? `counter-structure veto (${vetoWhy})` : 'counter-structure');
+  }
+  return {
+    tf, dir: voteDir, strength, conf: Math.max(20, strength),
+    rsi: rsiV != null ? Math.round(rsiV * 10) / 10 : null,
+    adx: adxV != null ? Math.round(adxV * 10) / 10 : null,
+    ltp: close,
+    note: noteBits.join(' · '),
+    // v21.23.15 telemetry (additive; legacy consumers ignore it)
+    voteEngine: v2 ? 'v2' : 'legacy',
+    mom3Atr: mom3Atr != null ? Math.round(mom3Atr * 100) / 100 : null,
+    context2: v2 ? context2 : null,
+    structureDir: v2 ? structureDir : null,
+    structureConflict,
+    // v21.23.17: explicit suppression telemetry — the board badge can show
+    // "60% capped" vs "neutral (EMA50 not reclaimed)" without guessing.
+    counterStructureSuppressed,
+    counterStructureSuppressedReason: counterStructureSuppressed
+      ? (ema50 == null ? 'ema50-unavailable' : !closeBeyondEma50 ? 'close-not-beyond-ema50' : 'reversal-unconfirmed')
+      : null,
+    rawStrength,
+    // Additive telemetry: pre-ADX score + confirmed reversal side. Tests use
+    // them to prove the force path and the legacy escape hatch.
+    score: Math.round(score * 100) / 100,
+    reversal: activeDump ? 'dump' : activePump ? 'pump' : null,
+  };
+}
+
+// ------------------------------------------------------------
+// Structure stop (15m swings, ATR-buffered)
+// ------------------------------------------------------------
+function _structureStop(candles15mIn, side, ltp) {
+  // v21.23.12 [L2.5]: 15m swing scan mirror-guard (probrain structureStop twin).
+  const candles15m = ensureAscending(candles15mIn);
+  if (!Array.isArray(candles15m) || candles15m.length < 45) return null;
+  const a = atrOf(candles15m, 14);
+  if (a == null || !(a > 0)) return null;
+  const lastClose = Number(candles15m[candles15m.length - 1].close);
+  if (!(lastClose > 0)) return null;
+  const lookback = candles15m.slice(-40);
+  // v18.5 SCALE-SAFETY: all swing/ATR math runs in the candle's OWN
+  // currency scale (CoinDCX INR or Binance USDT — the fetch chain picks
+  // whichever answered). The stop is emitted in the LTP's scale: direct
+  // when ltp matches the candle scale (within 5%), else converted via
+  // the close-ratio so a USDT-sourced stop still prices an INR entry.
+  const toLtp = (slLocal) => {
+    if (ltp > 0) {
+      if (Math.abs(ltp - lastClose) / lastClose < 0.05) {
+        return { sl: Math.round(slLocal * 10000) / 10000, style: 'mtf-15m-swing', refTf: '15m', atr: a };
+      }
+      const ratio = slLocal / lastClose;
+      return { sl: Math.round(ltp * ratio * 10000) / 10000, ratio: Math.round(ratio * 10000) / 10000, style: 'mtf-15m-swing', refTf: '15m', atr: a };
+    }
+    return { sl: Math.round(slLocal * 10000) / 10000, style: 'mtf-15m-swing', refTf: '15m', atr: a };
+  };
+  if (side === 'LONG') {
+    let swing = null;
+    for (let i = lookback.length - 2; i >= 1; i--) {
+      const c = lookback[i], p = lookback[i - 1], n = lookback[i + 1];
+      if (c.low < p.low && c.low < n.low) { swing = c.low; break; }
+    }
+    if (swing == null || swing >= lastClose) return null;
+    const sl = Math.min(lastClose - 1.2 * a, swing - 0.25 * a);
+    if (!(sl > 0) || sl >= lastClose) return null;
+    return toLtp(sl);
+  }
+  let swing = null;
+  for (let i = lookback.length - 2; i >= 1; i--) {
+    const c = lookback[i], p = lookback[i - 1], n = lookback[i + 1];
+    if (c.high > p.high && c.high > n.high) { swing = c.high; break; }
+  }
+  if (swing == null || swing <= lastClose) return null;
+  const sl = Math.max(lastClose + 1.2 * a, swing + 0.25 * a);
+  return toLtp(sl);
+}
+
+// ------------------------------------------------------------
+// Lightweight 1d+4h HTF bias snapshot (2 fetches, board anti-lag gate)
+// ------------------------------------------------------------
+const HTF_SNAP_TTL_MS = 90_000;
+const _htfSnapCache = new Map();
+
+/** v21.26.0 [FUTURES-DOMAIN HTF]: the 4h/1d bias MUST ride the same candle
+ *  family as the plan (rawTfCandlesUsdt: CoinDCX USDT-perp REST + futures
+ *  WS overlay -> Binance/Bybit USDT-perp fallback). Previously this used
+ *  `_candlesFor` = CoinDCX INR **spot** (or Binance spot) while the plan
+ *  priced USDT **futures**; spot-vs-perp wick/structure divergence could
+ *  flip the HTF bias against the plan (the "signal LONG, trade SHORT"
+ *  class). Spot data ab crypto/futures/metals HTF bias me KABHI nahi
+ *  jaata - futures unavailable => bias honestly UNAVAILABLE. */
+async function _htfCandlesFor(symbol, market, tf) {
+  const mkt = String(market || 'INDIA').toUpperCase();
+  if (mkt === 'CRYPTO' || mkt === 'FUTURES' || mkt === 'METALS') {
+    const r = await rawTfCandlesUsdt(symbol, tf).catch(() => null);
+    return Array.isArray(r?.candles) && r.candles.length >= 30 ? r.candles : null;
+  }
+  return await _candlesFor(symbol, mkt, tf).catch(() => null);
+}
+
+export async function buildHtfBiasSnapshot(symbol, market) {
+  const sym = String(symbol || '').trim().toUpperCase();
+  const mkt = String(market || 'INDIA').toUpperCase();
+  if (!sym) return null;
+  const key = `htf2:${mkt}:${sym}`;
+  const hit = _htfSnapCache.get(key);
+  if (hit && Date.now() - hit.at < HTF_SNAP_TTL_MS) return hit.payload;
+
+  const [c4, c1] = await Promise.all([
+    _htfCandlesFor(sym, mkt, '4h'),
+    _htfCandlesFor(sym, mkt, '1d'),
+  ]);
+  const votes = [
+    c4 && c4.length ? _tfVote(c4, '4h') : null,
+    c1 && c1.length ? _tfVote(c1, '1d') : null,
+  ].filter(v => v && (v.dir === 1 || v.dir === -1));
+
+  let payload;
+  if (!votes.length) {
+    payload = {
+      ok: false, symbol: sym, market: mkt, ts: Date.now(),
+      engine: 'htf2', lightweight: true, alignment: null, ltfTrigger: null,
+      htfBias: null, consensus: 'NEUTRAL', agreementPct: null,
+      phase: 'UNAVAILABLE', timeframes: [],
+    };
+  } else {
+    const totalW = votes.reduce((a, v) => a + (TF_WEIGHT[v.tf] || 1), 0);
+    const net = votes.reduce((a, v) => a + v.dir * (TF_WEIGHT[v.tf] || 1), 0) / totalW;
+    const upW = votes.filter(v => v.dir === 1).reduce((a, v) => a + (TF_WEIGHT[v.tf] || 1), 0);
+    const agree = clamp(Math.max(upW, totalW - upW) / totalW, 0.5, 1);
+    payload = {
+      ok: true, symbol: sym, market: mkt, ts: Date.now(),
+      engine: 'htf2', lightweight: true, alignment: null, ltfTrigger: null,
+      htfBias: net >= 0.2 ? 'BULLISH' : net <= -0.2 ? 'BEARISH' : 'NEUTRAL',
+      consensus: net >= 0.2 ? 'BULLISH' : net <= -0.2 ? 'BEARISH' : 'NEUTRAL',
+      agreementPct: Math.round(agree * 100),
+      phase: agree >= 0.72 ? 'TREND-ALIGNED' : agree >= 0.55 ? 'MIXED' : 'SPLIT',
+      timeframes: votes.map(v => ({ tf: v.tf, dir: v.dir, strength: v.strength, conf: v.conf })),
+    };
+  }
+  _htfSnapCache.set(key, { at: Date.now(), payload });
+  while (_htfSnapCache.size > SNAP_CACHE_MAX) {
+    const k = _htfSnapCache.keys().next().value;
+    if (k === undefined) break;
+    _htfSnapCache.delete(k);
+  }
+  return payload;
+}
+
+// ------------------------------------------------------------
+// Snapshot
+// ------------------------------------------------------------
+export async function buildMTFSnapshot(symbol, market, opts = {}) {
+  const sym = String(symbol || '').trim().toUpperCase();
+  const mkt = String(market || 'INDIA').toUpperCase();
+  if (!sym) return null;
+  const side = opts.side === 'SHORT' ? 'SHORT' : opts.side === 'LONG' ? 'LONG' : null;
+
+  const key = `mtf6:${mkt}:${sym}:${side || '-'}`;
+  const hit = _snapCache.get(key);
+  if (hit && Date.now() - hit.at < SNAP_TTL_MS) return hit.payload;
+  // v18.6.4: circuit — per-symbol blackout first, then the GLOBAL
+  // breaker (only when many distinct symbols are dark = user offline).
+  const symKey = `${mkt}:${sym}`;
+  const now0 = Date.now();
+  const symSkip = _mtfSkipBySym.get(symKey) || 0;
+  if (now0 < symSkip || now0 < _mtfSkipUntil) return null;
+
+  const jobs = TFS.map(async (tf) => {
+    const candles = await _candlesFor(sym, mkt, tf);
+    if (!candles) return { tf, dir: null, strength: 0, conf: 0, rsi: null, adx: null, note: 'no data' };
+    return _tfVote(candles, tf);
+  });
+  const settled = await Promise.allSettled(jobs);
+  // v18.6.4: a REJECTED job keeps its OWN timeframe — the old hardcoded
+  // `tf:'1m'` placeholder used to OVERWRITE the real 1m vote when a
+  // later TF (e.g. 1d) threw, silently killing the 1m timing leg.
+  const votes = settled.map((s, i) => (s.status === 'fulfilled' ? s.value : { tf: TFS[i], dir: null, strength: 0, conf: 0, rsi: null, adx: null, note: 'error' })).filter(Boolean);
+  const byTf = new Map(votes.map(v => [v.tf, v]));
+
+  const voting = votes.filter(v => v.dir === 1 || v.dir === -1);
+  const totalW = voting.reduce((acc, v) => acc + (TF_WEIGHT[v.tf] || 1), 0);
+  if (voting.length < 2 || totalW <= 0) {
+    const snapDegraded = {
+      ok: false, symbol: sym, market: mkt, ts: Date.now(),
+      timeframes: TFS.map(tf => byTf.get(tf) || { tf, dir: null, strength: 0, note: 'no data' }),
+      consensus: 'NEUTRAL', alignment: 0, agreement: null, agreementPct: null,
+      phase: 'UNAVAILABLE', htfBias: null, ltfTrigger: null,
+      timing: { quality: 'N/A', note: 'insufficient timeframe data' },
+      structureStop: null, alignedWithSide: null, side,
+    };
+    // cache the degraded read (a 90s negative cache stops per-cycle
+    // re-fetch storms) + drive the PER-SYMBOL circuit breaker
+    _snapCache.set(key, { at: Date.now(), payload: snapDegraded });
+    while (_snapCache.size > SNAP_CACHE_MAX) {
+      const k = _snapCache.keys().next().value;
+      if (k === undefined) break;
+      _snapCache.delete(k);
+    }
+    const prevFail = _mtfFailBySym.get(symKey);
+    const streak = (prevFail?.streak || 0) + 1;
+    _mtfFailBySym.set(symKey, { streak, at: Date.now() });
+    if (streak >= MTF_FAIL_OPEN) {
+      _mtfSkipBySym.set(symKey, Date.now() + 10 * 60_000);
+      _mtfFailBySym.delete(symKey);
+    }
+    // GLOBAL breaker: only a WIDESPREAD outage (8+ distinct symbols,
+    // each failed ≥2 times within 10m — cached reads don't count) —
+    // a couple of thin coins must never blackout the whole board.
+    if (_mtfSkipUntil < Date.now() && _widespreadFailCount() >= MTF_GLOBAL_DISTINCT) {
+      _mtfSkipUntil = Date.now() + 10 * 60_000;
+      _mtfSkipBySym.clear();
+      _mtfFailBySym.clear();
+    }
+    return snapDegraded;
+  }
+
+  // weighted net score −1 … +1
+  const net = clamp(voting.reduce((acc, v) => acc + v.dir * (TF_WEIGHT[v.tf] || 1) * (0.4 + 0.6 * (v.strength / 100)), 0) / totalW, -1, 1);
+  const consensus = net >= 0.18 ? 'BULLISH' : net <= -0.18 ? 'BEARISH' : 'NEUTRAL';
+
+  // agreement: the DOMINANT side's share of the voting weight — a 50/50
+  // split reads ~0.5 (honest conflict), 3-of-4 aligned reads 0.75, all
+  // aligned reads 1.0. (The earlier 1−spread formula read a balanced
+  // conflict as ~0.9 "agreement" — exactly backwards.)
+  const upW = voting.filter(v => v.dir === 1).reduce((acc, v) => acc + (TF_WEIGHT[v.tf] || 1), 0);
+  const agreement = clamp(Math.max(upW, totalW - upW) / totalW, 0.5, 1);
+
+  // phase bands (agreement floor is 0.5 by construction — dominant side):
+  // ≥0.72 the weight sits on ONE side (trend), ≥0.55 lean, else split.
+  const phase = agreement >= 0.72 ? 'TREND-ALIGNED' : agreement >= 0.55 ? 'MIXED' : 'SPLIT';
+
+  const biasOf = (tfs) => {
+    const vs = tfs.map(tf => byTf.get(tf)).filter(v => v && (v.dir === 1 || v.dir === -1));
+    if (!vs.length) return null;
+    const w = vs.reduce((acc, v) => acc + (TF_WEIGHT[v.tf] || 1), 0);
+    const n = vs.reduce((acc, v) => acc + v.dir * (TF_WEIGHT[v.tf] || 1), 0) / w;
+    return n >= 0.2 ? 'BULLISH' : n <= -0.2 ? 'BEARISH' : 'NEUTRAL';
+  };
+  const htfBias = biasOf(['1d', '4h']);
+  const ltfTrigger = biasOf(['1m', '5m']);
+
+  // timing gate: LTF exhaustion against the intended side
+  let timing = { quality: 'GOOD', note: 'LTF healthy' };
+  const r1m = byTf.get('1m')?.rsi ?? null;
+  const r5m = byTf.get('5m')?.rsi ?? null;
+  if (side === 'LONG') {
+    if ((r1m != null && r1m > 78) || (r5m != null && r5m > 74)) timing = { quality: 'POOR', note: 'LTF overbought — pullback entry ka wait karo' };
+    else if ((r1m != null && r1m > 68) || (r5m != null && r5m > 66)) timing = { quality: 'CAUTION', note: 'LTF warm — chhota pullback expect karo' };
+  } else if (side === 'SHORT') {
+    if ((r1m != null && r1m < 22) || (r5m != null && r5m < 26)) timing = { quality: 'POOR', note: 'LTF oversold — bounce risk, short mat pakdo' };
+    else if ((r1m != null && r1m < 32) || (r5m != null && r5m < 34)) timing = { quality: 'CAUTION', note: 'LTF cool — bounce possible' };
+  }
+
+  let structureStop = null;
+  if (side) {
+    const ltp = Number(opts.ltp) > 0 ? Number(opts.ltp)
+      : (() => { for (const tf of ['15m', '5m', '1h']) { const v = byTf.get(tf); if (v?.ltp > 0) return v.ltp; } return null; })();
+    if (ltp) {
+      const candles15m = await _candlesFor(sym, mkt, '15m');
+      structureStop = _structureStop(candles15m, side, ltp);
+    }
+  }
+
+  const alignedWithSide = side
+    ? (side === 'LONG' ? consensus === 'BULLISH' : consensus === 'BEARISH')
+    : null;
+  const counterHtf = side && htfBias
+    ? (side === 'LONG' ? htfBias === 'BEARISH' : htfBias === 'BULLISH')
+    : null;
+
+  const snap = {
+    ok: true, symbol: sym, market: mkt, ts: Date.now(), side,
+    timeframes: TFS.map(tf => {
+      const v = byTf.get(tf);
+      if (v) { const { tf: _t, note, ...rest } = v; return { tf, ...rest, note }; }
+      return { tf, dir: null, strength: 0, conf: 0, rsi: null, adx: null, note: 'no data' };
+    }),
+    consensus, alignment: Math.round(net * 100), agreement,
+    agreementPct: Math.round(agreement * 100), phase,
+    htfBias, ltfTrigger, timing, structureStop,
+    alignedWithSide, counterHtf,
+  };
+
+  _snapCache.set(key, { at: Date.now(), payload: snap });
+  while (_snapCache.size > SNAP_CACHE_MAX) {
+    const k = _snapCache.keys().next().value;
+    if (k === undefined) break;
+    _snapCache.delete(k);
+  }
+  _mtfFailBySym.delete(symKey); // v18.6.4: a real read closes THIS symbol's streak
+  return snap;
+}
+
+/** Compact wire payload for the signal card's MTF badge (sig.mtf). */
+export function mtfWire6Payload(snap) {
+  if (!snap || typeof snap !== 'object') return null;
+  const chip = (tf) => {
+    const v = (snap.timeframes || []).find(x => x.tf === tf);
+    if (!v) return null;
+    return { dir: v.dir == null ? 0 : v.dir, conf: v.conf ?? v.strength ?? 0 };
+  };
+  const legacy = {
+    m5: chip('5m'), m15: chip('15m'), h1: chip('1h'),
+    agreement: snap.agreement ?? null,
+  };
+  if (!snap.ok) return { ...legacy, engine: 'mtf6', available: false };
+  return {
+    ...legacy,
+    engine: 'mtf6',
+    available: true,
+    tfs: (snap.timeframes || []).map(v => ({
+      tf: v.tf,
+      dir: v.dir,
+      conf: v.conf ?? v.strength ?? 0,
+      // v21.23.17: expose the cap/veto so the badge can explain why a
+      // counter-structure vote is 60% (or absent) instead of silently
+      // looking like a weak trend read.
+      strength: v.strength ?? v.conf ?? 0,
+      rawStrength: v.rawStrength ?? null,
+      structureConflict: v.structureConflict === true,
+      counterStructureSuppressed: v.counterStructureSuppressed === true,
+      reversal: v.reversal ?? null,
+    })),
+    consensus: snap.consensus,
+    alignment: snap.alignment,
+    agreementPct: snap.agreementPct,
+    phase: snap.phase,
+    htfBias: snap.htfBias,
+    ltfTrigger: snap.ltfTrigger,
+    timing: snap.timing ? { quality: snap.timing.quality, note: snap.timing.note } : null,
+  };
+}
+
+/** Test hook — clear caches between hermetic suite cases. */
+export function __clearMtfCaches() { _snapCache.clear(); _htfSnapCache.clear(); _yfCache.clear(); _mtfFailBySym.clear(); _mtfSkipBySym.clear(); _mtfSkipUntil = 0; }
+/** Test hook — run the per-TF vote on a candle set directly. */
+export function __tfVote(candles, tf) { return _tfVote(candles, tf); }
+
+// ------------------------------------------------------------
+// v20.2 CHART CANDLES — the price chart endpoint's data source.
+// The board/deep path already fetches these exact series for MTF-6;
+// this wrapper trims to the last `bars` candles, and (like the
+// structure-stop converter) rescales a fallback-sourced series onto
+// the caller's LTP scale so entry/SL/target overlay lines land on
+// the chart in the desk's native currency (INR spot / USDT futures).
+// 60s response cache — the SAME chain MTF-6 uses, zero new upstreams.
+// ------------------------------------------------------------
+const CHART_TFS = new Set(['5m', '15m', '1h', '1d']);
+const _chartCache = new Map();
+const CHART_TTL_MS = 60_000;
+const CHART_CACHE_MAX = 64;
+
+export async function chartCandles(symbol, market, tf, opts = {}) {
+  const mkt = String(market || 'INDIA').toUpperCase();
+  const t = String(tf || '15m').toLowerCase();
+  if (!CHART_TFS.has(t)) return { ok: false, error: 'tf must be one of 5m/15m/1h/1d' };
+  const sym = String(symbol || '').toUpperCase().trim();
+  if (!sym || sym.length > 16) return { ok: false, error: 'bad symbol' };
+  const ltp = Number(opts.ltp);
+  const bars = Math.min(180, Math.max(40, Number(opts.bars) || 96));
+
+  const key = `${mkt}:${sym}:${t}:${bars}`;
+  const hit = _chartCache.get(key);
+  const now = Date.now();
+  let base = hit && now - hit.at < CHART_TTL_MS ? hit.payload : null;
+  // v21.23.9 [F2]: cache-hit fetchedAt honesty — pehle har read `now`
+  // bolta tha jabki forming bar `hit.at` ka freeze tha.
+  const dataAt = base && hit ? hit.at : now;
+  if (base) {
+    // v21.23.9 [F2]: INDIA/GLOBALFUTURES hits per-READ overlay refresh —
+    // pehle overlaid series 60s-TTL tak cache-hit par stale forming bar
+    // serve karta tha (miss-path fresh tha, hit-path 60s purana). Domain
+    // lock safe: indiaOverlayCandles hamesha same-domain (IN_<SYM> tick →
+    // .NS/INR candles). CRYPTO/FUTURES legs yahan refresh NAHI hote —
+    // wahan cached payload CoinDCX-INR ya Binance-USDT leg ka ho sakta hai
+    // aur blind re-apply cross-domain violation ho jayega (v20.9.3);
+    // 60s TTL unke liye bounded hai.
+    if (mkt === 'INDIA' || mkt === 'GLOBALFUTURES') {
+      const refreshed = indiaOverlayCandles(sym, t, base);
+      if (Array.isArray(refreshed) && refreshed.length > 0) base = refreshed;
+    }
+  }
+  let scale = null;
+  if (!base) {
+    base = await _candlesFor(sym, mkt, t);
+    if (!Array.isArray(base) || base.length < 30) return { ok: false, error: 'candles unavailable (source down or thin symbol)' };
+    base = base.slice(-bars);
+    _chartCache.set(key, { at: now, payload: base });
+    while (_chartCache.size > CHART_CACHE_MAX) {
+      const k = _chartCache.keys().next().value;
+      if (k === undefined) break;
+      _chartCache.delete(k);
+    }
+  }
+
+  // Scale conversion — same contract as _structureStop.toLtp(): when the
+  // candle series' own currency differs from the desk's LTP (Binance USDT
+  // fallback serving an INR desk, or vice versa), ratios convert prices.
+  const lastClose = Number(base[base.length - 1].close) || 0;
+  let candles = base;
+  if (Number.isFinite(ltp) && ltp > 0 && lastClose > 0 && Math.abs(ltp - lastClose) / lastClose >= 0.05) {
+    const ratio = ltp / lastClose;
+    candles = base.map(c => ({
+      time: c.time,
+      open: +(c.open * ratio).toFixed(6),
+      high: +(c.high * ratio).toFixed(6),
+      low: +(c.low * ratio).toFixed(6),
+      close: +(c.close * ratio).toFixed(6),
+      volume: c.volume || 0,
+    }));
+    scale = { ratio: +ratio.toFixed(6), note: 'converted to desk LTP scale (fallback candle source)' };
+  }
+
+  return {
+    ok: true, symbol: sym, market: mkt, tf: t, bars: candles.length,
+    candles, scaled: scale, fetchedAt: dataAt,
+    tfMs: t === '5m' ? 300_000 : t === '15m' ? 900_000 : t === '1h' ? 3_600_000 : 86_400_000,
+  };
+}
+
+/** v20.2 RAW candle access for the replay harness — the SAME cached
+ *  chain (Yahoo INDIA / CoinDCX→Binance crypto), NO bar-count trim. */
+export async function rawTfCandles(symbol, market, tf) {
+  return await _candlesFor(String(symbol || '').toUpperCase(), String(market || 'INDIA').toUpperCase(), tf);
+}
+
+// ============================================================
+// v21.17.0 — USDT-DOMAIN CANDLES (MTF Dual Board ka crypto pricing)
+// ------------------------------------------------------------
+// USER REPORT (verbatim): "MTF Signals Board me jo trading signals hai
+// vo INR price me aa rahe hai, muje USDT me symbols ko price show hona
+// hai."
+//
+// ROOT CAUSE: `_candlesFor` ka CRYPTO branch CoinDCX **INR** candles
+// ko pehle try karta hai (MTF votes ke liye theek — EMA/RSI/MACD
+// scale-invariant hote hain). Par MTF Dual Board usi candle set se
+// PRICES (entry/SL/T1/T2) banata hai → India me CoinDCX reachable hai,
+// to har crypto row ₹ me render hoti thi (BTC ₹95,00,000-class),
+// jabki Superintelligence board aur USDT futures desk $ domain me.
+//
+// FIX: dual board ke liye ek alag USDT-first resolver. v21.26.0 ke baad
+// chain puri tarah FUTURES-domain hai (SPOT kabhi nahi):
+//   Leg 1:   CoinDCX USDT-M perp candles (pcode=f) + CoinDCX futures WS
+//            live-bar overlay (cxFutOverlayCandles)
+//   Leg 1.5: metals — Binance fapi XAUUSDT/XAGUSDT -> COMEX rescaled
+//   Leg 2:   Binance USDT-M fapi klines -> Bybit USDT linear perp klines
+//   (old spot legs REMOVED: Binance/Bybit spot + CoinDCX INR spot scaled)
+// Votes wahi rehte hain (scale-invariant), sirf PRICE DOMAIN badalta hai.
+// ============================================================
+const FUT_TF_RES = { '1m': '1', '5m': '5', '15m': '15', '1h': '60', '4h': '240', '1d': '1D' };
+
+export async function rawTfCandlesUsdt(symbol, tf, opts = {}) {
+  const base = String(symbol || '').toUpperCase().trim()
+    .replace(/^(FUT_|GLOB_)/, '')
+    .replace(/[-_](USDT|USDC|USD|INR)$/, '');
+  if (!/^[A-Z0-9]{2,20}$/.test(base)) return null;
+  // Leg 1 — v21.19.0 Native CoinDCX USDT Perpetual Futures candlesticks (B-<BASE>_USDT, pcode=f)
+  try {
+    const res = FUT_TF_RES[String(tf || '15m').toLowerCase()];
+    if (res) {
+      const fc = await fetchFuturesCandles(futuresPairFor(base), res, 240).catch(() => null);
+      if (Array.isArray(fc) && fc.length >= 30) {
+        // v21.23.5: futures WS book ka ~1s mark/last print live bar pe —
+        // dual-board crypto rows ki 15m — D1 ladder tick-fresh.
+        return { candles: cxFutOverlayCandles(base, tf, fc), ccy: 'USDT', src: 'coindcx-fut-usdt', fx: null, base };
+      }
+    }
+  } catch { /* fall through */ }
+  // Leg 1.5 — v21.23.10 [METALS-LEGS]: XAU/XAG ke liye purpose-built metals
+  // chain (Binance fapi XAUUSDT klines → Yahoo COMEX GC=F/SI=F rescaled to
+  // live anchor). Pehle ye desk Leg-2/3 pe gir thi: Binance SPOT XAUUSDT =
+  // PERMANENT -1121 invalid symbol + CoinDCX spot me XAUINR exist hi nahi
+  // karta → CoinDCX futures REST blip par Gold/Silver board rows ka plan
+  // build KABHI nahi hota tha (live-probe: dono boards pe 'context candles
+  // (15m) unavailable/thin'). Repo me chain pehle se thi (futures.js
+  // fetchMetalsFapiCandles + fetchMetalsYahooCandles) par mtf.js me wired
+  // NAHI thi. Anchor rescale desk-ltp se (fapi leg 1:1 USDT hai, rescale
+  // sirf COMEX leg ko chahiye — contango ~0.3-0.8%).
+  if (isMetalsBase(base)) {
+    const res = FUT_TF_RES[String(tf || '15m').toLowerCase()] || '15';
+    const fapi = await fetchMetalsFapiCandles(base, res, 240).catch(() => null);
+    if (Array.isArray(fapi) && fapi.length >= 30) {
+      return { candles: cxFutOverlayCandles(base, tf, fapi), ccy: 'USDT', src: 'binance-fapi-metals', fx: null, base };
+    }
+    const anchor = Number(opts.ltp) > 0 ? Number(opts.ltp) : null;
+    const comex = await fetchMetalsYahooCandles(base, res, 240).catch(() => null);
+    if (Array.isArray(comex) && comex.length >= 30) {
+      let candles = comex;
+      if (anchor > 0) {
+        const last = Number(comex[comex.length - 1]?.close) || 0;
+        const scale = last > 0 ? anchor / last : 0;
+        if (Number.isFinite(scale) && scale > 0.5 && scale < 2) {
+          candles = comex.map(c => ({
+            time: c.time, volume: c.volume,
+            open: c.open * scale, high: c.high * scale, low: c.low * scale, close: c.close * scale,
+          }));
+        }
+      }
+      return { candles: cxFutOverlayCandles(base, tf, candles), ccy: 'USDT', src: 'yahoo-comex-metals', fx: null, base };
+    }
+  }
+  // Leg 2 — v21.26.0 [FUTURES-ONLY FALLBACK]: Binance USDT-M fapi klines ->
+  // Bybit USDT linear perp klines (fetchBinanceFutKlines). Pehle ye leg
+  // `fetchBinanceKlines` = Binance/Bybit **SPOT** thi - spot wick depth /
+  // venue basis plan (USDT perp) se diverge karke direction flip kar sakti
+  // thi. Ab crypto/futures rows SPOT pe kabhi degrade nahi hoti:
+  // futures unavailable => null (honest "candles unavailable").
+  try {
+    const bk = await fetchBinanceFutKlines(base, tf, 240).catch(() => null);
+    if (Array.isArray(bk) && bk.length >= 30) {
+      return { candles: bk, ccy: 'USDT', src: 'binance-fut-usdt', fx: null, base };
+    }
+  } catch { /* fall through */ }
+  // v21.26.0: old Leg-3 (CoinDCX INR **spot** scaled to USDT) REMOVED - it
+  // was the last silent spot leg in the auto/plan candle chain. Futures
+  // unavailable => null (honest), never a spot-derived auto-trade plan.
+  return null;
+}
+
+/** Pure helper (testable): scale an INR candle array into the USDT domain. */
+export function scaleCandlesInrToUsdt(candles, fx) {
+  const rate = Number(fx);
+  if (!Array.isArray(candles) || !(rate > 40 && rate < 150)) return null;
+  return candles.map(c => ({
+    ...c,
+    open: c.open / rate, high: c.high / rate, low: c.low / rate, close: c.close / rate,
+  }));
+}

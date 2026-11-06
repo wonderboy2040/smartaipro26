@@ -1,0 +1,59 @@
+# ============================================================
+# SmartAI Pro — .gitignore (v21.36.0 GitHub-connect)
+# ------------------------------------------------------------
+# PRINCIPLE: anything that is a SECRET, live TRADING STATE, a
+# build artifact, or a dependency is EXCLUDED. Only source + docs
+# + templates + config-schemas ship to GitHub. When in doubt,
+# IGNORE — a missed source file is easy to re-add; a committed
+# CoinDCX key or live journal is not recoverable.
+# ============================================================
+
+# --- Node dependencies & build output (regenerated, not source) ---
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+coverage/
+.vite/
+.turbo/
+
+# --- Secrets & credentials — NEVER commit ---
+# the real .env holds APP_PIN / API_TOKEN / CoinDCX keys / LLM provider keys
+.env
+.env.local
+.env.*.local
+*.pem
+*.p12
+id_rsa*
+*.key
+# runtime token + session files (service/session auth material)
+.api-token
+.session-token
+.st3.json
+
+# --- Live trading state & runtime data — NEVER commit ---
+server/data/
+data/
+server-data/
+config/
+models/
+ml-service/models/
+telegram-bot/.state.json
+# backup / pre-live snapshots (kept alongside server/data)
+*.bak
+*.pre-live-*.bak
+*.tradeAll-off-*
+
+# --- Logs & Windows stray artifacts ---
+*.log
+nul
+
+# --- Agent / editor / OS cruft ---
+.claude/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Keep the EMPTY templates tracked (they document required vars) ---
+!.env.example
+!telegram-bot/.env.example

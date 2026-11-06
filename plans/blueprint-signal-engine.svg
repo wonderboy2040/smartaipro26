@@ -1,0 +1,230 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1560" height="1080" viewBox="0 0 1560 1080" font-family="'Segoe UI',system-ui,sans-serif">
+  <defs>
+    <marker id="arw" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L8,3 z" fill="#5aa9e6"/>
+    </marker>
+    <marker id="arwG" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L8,3 z" fill="#3f9460"/>
+    </marker>
+    <marker id="arwR" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L8,3 z" fill="#d06a5a"/>
+    </marker>
+  </defs>
+  <style>
+    .bg{fill:#0d1424;}
+    .box{fill:#16233c;stroke:#33486b;stroke-width:1;}
+    .boxT{fill:#1b2b45;stroke:#4f6a94;stroke-width:1;}
+    .boxOk{fill:#14301f;stroke:#3f9460;stroke-width:1;}
+    .boxWarn{fill:#332512;stroke:#c98a3a;stroke-width:1;}
+    .boxExt{fill:#201a2b;stroke:#6a4f94;stroke-width:1;stroke-dasharray:5 3;}
+    .t{fill:#e8eef7;font-size:12px;}
+    .ts{fill:#9fb0c8;font-size:10px;}
+    .th{fill:#ffffff;font-size:13px;font-weight:700;}
+    .ttl{fill:#fff;font-size:20px;font-weight:800;}
+    .sub{fill:#7a8aa3;font-size:12px;}
+    .w{stroke:#5aa9e6;stroke-width:1.5;fill:none;}
+    .wg{stroke:#3f9460;stroke-width:1.5;fill:none;}
+    .wr{stroke:#d06a5a;stroke-width:1.5;fill:none;}
+    .we{stroke:#6a4f94;stroke-width:1.4;fill:none;stroke-dasharray:5 3;}
+    .wl{fill:#8fb8e0;font-size:10px;}
+    .wgl{fill:#6fc98a;font-size:10px;}
+    .wrl{fill:#f08a7a;font-size:10px;}
+  </style>
+
+  <rect class="bg" width="1560" height="1080"/>
+  <text x="28" y="34" class="ttl">Crypto Signal Engine — Internal Wiring Detail</text>
+  <text x="28" y="54" class="sub">One tick of mtfAutoLink: board → candidates → Ollama direction-check → 3 hard gates → commit (paper|live) → SL-trail → P&amp;L ·  config knobs on the right</text>
+
+  <!-- STAGE 1: data -->
+  <rect class="box" x="30" y="90" width="250" height="150"/>
+  <text x="44" y="110" class="th">① Data &amp; Features</text>
+  <text x="44" y="128" class="ts">data.js (candles cache)</text>
+  <text x="44" y="142" class="ts">lib/indicators.js</text>
+  <text x="44" y="156" class="ts">featureVector.js</text>
+  <text x="44" y="170" class="ts">smc.js · correlation.js</text>
+  <text x="44" y="184" class="ts">priceCrossCheck (sanity)</text>
+  <text x="44" y="204" class="ts">per-symbol OHLCV + features</text>
+  <text x="44" y="218" class="ts">19-symbol CRYPTO universe</text>
+
+  <!-- STAGE 2: models -->
+  <rect class="box" x="320" y="90" width="250" height="150"/>
+  <text x="334" y="110" class="th">② Model Committee</text>
+  <text x="334" y="128" class="ts">ensemble.js (12 quant)</text>
+  <text x="334" y="142" class="ts">committee.js · council.js</text>
+  <text x="334" y="156" class="ts">consensus.js · expertPicks</text>
+  <text x="334" y="170" class="ts">llmChain.js (optional LLM)</text>
+  <text x="334" y="194" class="ts">OUT → score 0–100 + dir</text>
+  <text x="334" y="208" class="ts">per symbol, per MTF</text>
+
+  <!-- STAGE 3: board -->
+  <rect class="boxT" x="610" y="90" width="250" height="150"/>
+  <text x="624" y="110" class="th">③ MTF Dual Board</text>
+  <text x="624" y="128" class="ts">mtfDualBoard.js</text>
+  <text x="624" y="146" class="ts">SUPER_TIERS:</text>
+  <text x="624" y="160" class="ts">  ELITE 85 · STRONG 80</text>
+  <text x="624" y="174" class="ts">  ACTION 65 · WATCH 50</text>
+  <text x="624" y="196" class="ts">dualAutoCandidates(cfg)</text>
+  <text x="624" y="210" class="ts">minScore = clamp(minScore,50,95)</text>
+
+  <!-- candidate rows into the funnel -->
+  <rect class="boxOk" x="900" y="90" width="290" height="150"/>
+  <text x="914" y="110" class="th">④ Candidate Rows</text>
+  <text x="914" y="126" class="ts">each MTF row = one symbol·dir</text>
+  <text x="914" y="140" class="ts">row.autoBlockers (quality)</text>
+  <text x="914" y="154" class="ts">row.ensembleSignalAvailable</text>
+  <text x="914" y="168" class="ts">row.directionVerified</text>
+  <text x="914" y="182" class="ts">row.triggerFired</text>
+  <text x="914" y="200" class="ts">tradeAll ⇒ strip availability blockers</text>
+  <text x="914" y="214" class="ts">(keep quality blockers only)</text>
+
+  <!-- STAGE 5: Ollama direction verify -->
+  <rect class="boxExt" x="320" y="290" width="290" height="120"/>
+  <text x="334" y="310" class="th">⑤ Direction Verify — Ollama TRIO</text>
+  <text x="334" y="328" class="ts">llmSentinel.js → :11434</text>
+  <text x="334" y="344" class="ts">evaluateMtfRowWithOllamaTrio</text>
+  <text x="334" y="360" class="ts">seat1 fast 3:8b · seat2 deep 3:8b</text>
+  <text x="334" y="374" class="ts">seat3 vision 2.5vl:7b</text>
+  <text x="334" y="392" class="ts">approvedCount ≥ 2 → directionVerified</text>
+  <text x="334" y="404" class="ts">fire-and-forget · 30s cache</text>
+
+  <!-- STAGE 6: gates -->
+  <rect class="boxWarn" x="660" y="290" width="300" height="120"/>
+  <text x="674" y="310" class="th">⑥ Pre-Trade Gates [ENFORCE]</text>
+  <text x="674" y="328" class="ts">entryGates.js — ALL 3 must pass:</text>
+  <text x="674" y="344" class="ts">① monteCarloOddsGate — net edge &gt; 0</text>
+  <text x="674" y="358" class="ts">② breakoutConfirmGate — wave not stale</text>
+  <text x="674" y="372" class="ts">③ lateWaveGate — wave not &gt; 94% consumed</text>
+  <text x="674" y="390" class="ts">any fail ⇒ recordShadowDecision()</text>
+  <text x="674" y="404" class="ts">shadowStats.{mcOdds,breakout,lateWave}</text>
+
+  <!-- STAGE 7: commit -->
+  <rect class="boxT" x="1010" y="290" width="280" height="120"/>
+  <text x="1024" y="310" class="th">⑦ Commit Point</text>
+  <text x="1024" y="328" class="ts">cap free? (multiTrade: &lt; maxConcurrent)</text>
+  <text x="1024" y="344" class="ts">margin = equity · lev · risk% / N</text>
+  <text x="1024" y="362" class="ts">executionMode == live?</text>
+  <text x="1024" y="380" class="ts">  YES → coindcxOrders.js (real money)</text>
+  <text x="1024" y="394" class="ts">  NO  → paper.openPaperTrade()</text>
+  <text x="1024" y="408" class="ts">IP binding mandatory · wallet-tier lev</text>
+
+  <!-- STAGE 8: SL-trail -->
+  <rect class="boxOk" x="660" y="450" width="300" height="110"/>
+  <text x="674" y="470" class="th">⑧ SL-Trail "Super Intelligence"</text>
+  <text x="674" y="488" class="ts">preTp1Trail.js + fastSlTrailLoop (3s)</text>
+  <text x="674" y="504" class="ts">profit → raise SL (progressive lock)</text>
+  <text x="674" y="518" class="ts">adverse → fast gear (early cut)</text>
+  <text x="674" y="532" class="ts">peakR tracked continuously</text>
+  <text x="674" y="550" class="ts">TRAILED_SL_PROFIT_BOOKED</text>
+
+  <!-- STAGE 9: P&L -->
+  <rect class="box" x="320" y="450" width="290" height="110"/>
+  <text x="334" y="470" class="th">⑨ P&amp;L &amp; Close</text>
+  <text x="334" y="488" class="ts">close on SL / TP / trail / adverse</text>
+  <text x="334" y="504" class="ts">→ EXCHANGE_POSITION_CLOSED</text>
+  <text x="334" y="520" class="ts">→ cxBookState + trade-journal</text>
+  <text x="334" y="534" class="ts">peakR · R-multiple · close P&amp;L</text>
+  <text x="334" y="550" class="ts">feeds lessonsEngine + evolution ledger</text>
+
+  <!-- RISK KILL (side) -->
+  <rect class="boxWarn" x="30" y="450" width="250" height="110"/>
+  <text x="44" y="470" class="th">Risk Kill Layers</text>
+  <text x="44" y="488" class="ts">circuitGuard.js</text>
+  <text x="44" y="502" class="ts">consecutiveLossPause</text>
+  <text x="44" y="516" class="ts">kill-switch · L1/L2/L3 reconciler</text>
+  <text x="44" y="530" class="ts">healthMonitor (3-layer KILL)</text>
+  <text x="44" y="548" class="ts">STOP any stage instantly</text>
+
+  <!-- CONFIG KNOBS panel (right) -->
+  <rect class="boxT" x="1010" y="450" width="280" height="230"/>
+  <text x="1024" y="470" class="th">Config Knobs (mtf-auto-config.json)</text>
+  <text x="1024" y="490" class="ts">multiTradeMode: TRUE</text>
+  <text x="1024" y="506" class="ts">maxConcurrentTrades: 8</text>
+  <text x="1024" y="522" class="ts">universalLiveFloor: 50  (score gate)</text>
+  <text x="1024" y="538" class="ts">universalTradeAll: TRUE</text>
+  <text x="1024" y="554" class="ts">  └ strip availability blockers</text>
+  <text x="1024" y="568" class="ts">mcOddsGate/breakout/lateWave: ENFORCE</text>
+  <text x="1024" y="584" class="ts">minScore: 75</text>
+  <text x="1024" y="600" class="ts">executionMode: LIVE · enabled: TRUE</text>
+  <text x="1024" y="616" class="ts">consecutiveLossPauseMin: 0</text>
+  <text x="1024" y="634" class="tag" fill="#8fb8e0">POST /api/ai/mtf-auto/config writes it</text>
+  <text x="1024" y="664" class="ts">Ollama: OLLAMA_DEEP_MODEL=3:8b</text>
+  <text x="1024" y="678" class="ts">OLLAMA_MTF_TIMEOUT_MS=60000</text>
+  <text x="1024" y="692" class="ts">MAX_LOADED_MODELS=2 · NUM_CTX=4096</text>
+  <text x="1024" y="706" class="ts">KEEP_ALIVE=30m  (RAM-resident trio)</text>
+
+  <!-- main pipeline arrows -->
+  <line class="w" x1="280" y1="165" x2="320" y2="165" marker-end="url(#arw)"/>
+  <line class="w" x1="570" y1="165" x2="610" y2="165" marker-end="url(#arw)"/>
+  <line class="w" x1="860" y1="165" x2="900" y2="165" marker-end="url(#arw)"/>
+  <!-- candidates down into Ollama then gates then commit -->
+  <line class="w" x1="914" y1="240" x2="610" y2="290" marker-end="url(#arw)"/>
+  <line class="w" x1="465" y1="410" x2="660" y2="370" marker-end="url(#arw)"/>
+  <line class="w" x1="960" y1="350" x2="1010" y2="350" marker-end="url(#arw)"/>
+  <!-- commit to trail -->
+  <line class="w" x1="1150" y1="410" x2="900" y2="450" marker-end="url(#arw)"/>
+  <!-- trail to pnl -->
+  <line class="w" x1="660" y1="505" x2="610" y2="505" marker-end="url(#arw)"/>
+  <!-- risk kill stops stages (red dashed) -->
+  <line class="wr" x1="280" y1="505" x2="320" y2="505" marker-end="url(#arwR)" stroke-dasharray="6 3"/>
+  <text x="230" y="498" class="wrl">halt</text>
+  <!-- config knobs feed stages -->
+  <line class="we" x1="1010" y1="470" x2="860" y2="340" marker-end="url(#arw)"/>
+  <text x="880" y="400" class="wl">floor · cap · gates</text>
+  <line class="we" x1="1010" y1="490" x2="760" y2="330" marker-end="url(#arw)"/>
+  <text x="770" y="430" class="wl">ENFORCE gates</text>
+  <line class="we" x1="1150" y1="440" x2="610" y2="300" marker-end="url(#arw)"/>
+  <text x="900" y="470" class="wl">Ollama model/time/ctx</text>
+
+  <!-- ===== LOWER: per-trade state machine ===== -->
+  <text x="30" y="740" class="th" style="font-size:15px;">Position State Machine (one open trade, live CoinDCX futures)</text>
+  <rect class="boxOk" x="60" y="760" width="170" height="60"/>
+  <text x="74" y="782" class="th">OPENED</text>
+  <text x="74" y="798" class="ts">entry + SL + margin</text>
+
+  <rect class="box" x="300" y="760" width="170" height="60"/>
+  <text x="314" y="782" class="th">RUNNING</text>
+  <text x="314" y="798" class="ts">3s fastSlTrailLoop</text>
+
+  <rect class="boxOk" x="540" y="760" width="170" height="60"/>
+  <text x="554" y="782" class="th">PROFIT LOCKED</text>
+  <text x="554" y="798" class="ts">SL raised past BE</text>
+
+  <rect class="boxWarn" x="780" y="760" width="170" height="60"/>
+  <text x="794" y="782" class="th">ADVERSE GEAR</text>
+  <text x="794" y="798" class="ts">fast early-cut SL</text>
+
+  <rect class="box" x="1020" y="760" width="170" height="60"/>
+  <text x="1034" y="782" class="th">CLOSED</text>
+  <text x="1034" y="798" class="ts">peakR · P&amp;L recorded</text>
+
+  <line class="wg" x1="230" y1="790" x2="300" y2="790" marker-end="url(#arwG)"/>
+  <line class="wg" x1="470" y1="790" x2="540" y2="790" marker-end="url(#arwG)"/>
+  <line class="wr" x1="470" y1="800" x2="780" y2="800" marker-end="url(#arwR)" stroke-dasharray="6 3"/>
+  <text x="600" y="820" class="wrl">price adverse → early cut</text>
+  <line class="wg" x1="950" y1="790" x2="1020" y2="790" marker-end="url(#arwG)"/>
+  <line class="wg" x1="710" y1="820" x2="790" y2="860" marker-end="url(#arwG)"/>
+  <rect class="box" x="780" y="860" width="170" height="50"/>
+  <text x="794" y="880" class="ts">cxBookState.write()</text>
+  <text x="794" y="894" class="ts">journal + evolution ledger</text>
+  <line class="wr" x1="780" y1="790" x2="790" y2="860" marker-end="url(#arwR)"/>
+
+  <!-- ===== DATA FILE MAP ===== -->
+  <text x="30" y="960" class="th" style="font-size:15px;">Disk ⇄ Engine Map (server/data)</text>
+  <rect class="box" x="60" y="978" width="470" height="84"/>
+  <text x="74" y="998" class="t">mtf-auto-config.json → ⑦⑧ knobs (read every tick)</text>
+  <text x="74" y="1014" class="t">mtf-auto-state.json → book + shadowStats + events + lastTick</text>
+  <text x="74" y="1030" class="t">cxBookState ↔ cxRtStream fills · mtf-row-ledger (per-row verdict)</text>
+  <text x="74" y="1046" class="t">lessonsEngine / ai-evolution-ledger ← ⑨ outcomes</text>
+
+  <rect class="box" x="560" y="978" width="470" height="84"/>
+  <text x="574" y="998" class="t">circuitGuard / killSwitch → risk layer (halts ⑥⑦)</text>
+  <text x="574" y="1014" class="t">healthMonitor 60s → feed staleness + 3-layer KILL</text>
+  <text x="574" y="1030" class="t">directionLiveCert (version-pinned) = engine sanity proof</text>
+  <text x="574" y="1046" class="t">.env → Ollama model + timeouts + CoinDCX keys + APP_PIN</text>
+
+  <rect class="boxExt" x="1060" y="978" width="400" height="84"/>
+  <text x="1074" y="998" class="t">coindcxOrders.js → CoinDCX API (real orders)</text>
+  <text x="1074" y="1014" class="t">IP binding: order rejected without registered IP</text>
+  <text x="1074" y="1030" class="t">leverage from wallet tier (equity ₹3,018 → 10×)</text>
+  <text x="1074" y="1046" class="t">fills → cxRtStream → liveFeed → /api/stream (SSE)</text>
+</svg>

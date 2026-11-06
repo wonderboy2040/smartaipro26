@@ -1,0 +1,17 @@
+{
+  "name": "smartaipro-telegram-bot",
+  "version": "21.25.3",
+  "private": true,
+  "type": "module",
+  "description": "Zero-dependency Telegram control surface for SmartAI Pro (site API is the single source of truth)",
+  "main": "bot.mjs",
+  "scripts": {
+    "start": "node bot.mjs",
+    "dev": "node --watch bot.mjs",
+    "test": "node --test \"test/*.test.mjs\"",
+    "check": "node --check bot.mjs && node --check lib/api.mjs && node --check lib/commands.mjs && node --check lib/config.mjs && node --check lib/format.mjs && node --check lib/lock.mjs && node --check lib/logger.mjs && node --check lib/router.mjs && node --check lib/state.mjs && node --check lib/telegram.mjs && node --check lib/util.mjs && node --test \"test/*.test.mjs\""
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
