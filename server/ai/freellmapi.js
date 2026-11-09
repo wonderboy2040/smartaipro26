@@ -430,13 +430,30 @@ export async function freeLlmJson(prompt, {
   maxTokens = 2048,
   timeoutMs = 120_000,
 } = {}) {
-  const out = await freeLlmChat({
+  const req = {
     model,
     messages: _normalizeMessages(prompt, system),
     temperature,
     maxTokens,
     timeoutMs,
-  });
+  };
+  // v21.36.2 [JSON-MODE FIX — LIVE-CAUGHT]: auto:fast ne prose answer diya
+  // (reasoning text, no object) → llmChain ne "no-json response" track karke
+  // 2 fails par breaker arm kar diya aur poora AI lane 5-min cooldown me chala
+  // gaya. FreeLLMAPI OpenAI-compatible response_format support karta hai
+  // (verified live: auto:fast + response_format={"type":"json_object"} →
+  // clean {"ok":true}). Yahan force karo; strict system prompt backup rehta hai.
+  let out;
+  try {
+    out = await freeLlmChat({ ...req, jsonMode: true });
+  } catch (e) {
+    // Kuch upstream models response_format reject karte hain (400/422) —
+    // un par ek baar plain retry, warna valid verdicts permanently block ho
+    // jate. Koi silent JSON fabrication nahi: text wahi strict parser se
+    // guzarta hai.
+    if (e?.status === 400 || e?.status === 422) out = await freeLlmChat({ ...req, jsonMode: false });
+    else throw e;
+  }
   return { ...out, json: tryParseJson(out.text) };
 }
 
