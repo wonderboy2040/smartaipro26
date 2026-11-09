@@ -215,9 +215,10 @@ describe('v21.0.6 — deep-path debate model swap (source contract)', () => {
     );
     // the debate picks its asker by the deep flag…
     expect(src).toMatch(/const ask = opts\.deep \? councilAskDeep : councilAsk;/);
-    // …and all three steps use it
+    // bull + bear run in parallel, PM runs once after both (v21.36.3)
     const debateBody = src.slice(src.indexOf('export async function aiCouncilDebate'), src.indexOf('export async function aiCouncilVerify'));
-    expect((debateBody.match(/await ask\(/g) || []).length).toBe(3);
+    expect((debateBody.match(/ask\(/g) || []).length).toBe(3); // bull, bear, PM
+    expect(debateBody).toMatch(/await Promise\.all\(\[/); // advocates concurrent
     expect(debateBody).not.toMatch(/await councilAsk\(/); // no un-routed direct calls
     // the caller threads opts through
     expect(src).toMatch(/aiCouncilDebate\(candidates, deps, market, opts\)/);

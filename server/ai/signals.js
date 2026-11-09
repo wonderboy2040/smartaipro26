@@ -1083,22 +1083,27 @@ export async function aiCouncilDebate(candidates, deps, market, opts = {}) {
   const sentCtx = v2ModelsEnabled() ? sentimentContextFor(market) : null;
   const sentLines = sentCtx ? `\n${sentCtx}` : '';
 
-  // ---- STEP 1: BULL ADVOCATE ----
-  const bull = await ask(`You are the BULL ADVOCATE on an institutional investment committee for a ${venue} desk.
+  // ---- STEP 1+2: BULL & BEAR ADVOCATES (parallel) ----
+  // v21.36.3 [ULTRA-FAST]: the two advocates are independent — they read the
+  // SAME grounded data and never see each other's answer. Running them
+  // concurrently halves the debate wall-time (the PM step still waits for
+  // both, so the verdict quality is unchanged). Sequential order is kept in
+  // the returned object only for the prompt/response contract.
+  const [bull, bear] = await Promise.all([
+    ask(`You are the BULL ADVOCATE on an institutional investment committee for a ${venue} desk.
 Below are pre-scored consensus candidates from a 14-model quant ensemble. Your ONE job: build the strongest HONEST LONG case for EACH symbol using ONLY the numbers given (RSI/ADX/relVol/VWAP distance/ATR%/plan levels/votes). Never invent data; if a long case is weak, say so honestly and score it low.
 
 ${data}
 
-Respond STRICT JSON only: {"cases":{"SYMBOL":{"case":"2 sentences: the strongest long thesis grounded in the numbers","strength":0-100}}}`, deps);
-  if (!bull?.json?.cases || typeof bull.json.cases !== 'object') return null;
-
-  // ---- STEP 2: BEAR ADVOCATE ----
-  const bear = await ask(`You are the BEAR ADVOCATE on an institutional investment committee for a ${venue} desk.
+Respond STRICT JSON only: {"cases":{"SYMBOL":{"case":"2 sentences: the strongest long thesis grounded in the numbers","strength":0-100}}}`, deps),
+    ask(`You are the BEAR ADVOCATE on an institutional investment committee for a ${venue} desk.
 Below are the SAME pre-scored consensus candidates. Your ONE job: build the strongest HONEST SHORT case for EACH symbol using ONLY the numbers given (overbought RSI, exhaustion, thin volume, counter-regime, funding/crowding, stop placement risk). Never invent data; if a short case is weak, say so honestly and score it low.
 
 ${data}
 
-Respond STRICT JSON only: {"cases":{"SYMBOL":{"case":"2 sentences: the strongest short thesis grounded in the numbers","strength":0-100}}}`, deps);
+Respond STRICT JSON only: {"cases":{"SYMBOL":{"case":"2 sentences: the strongest short thesis grounded in the numbers","strength":0-100}}}`, deps),
+  ]);
+  if (!bull?.json?.cases || typeof bull.json.cases !== 'object') return null;
   if (!bear?.json?.cases || typeof bear.json.cases !== 'object') return null;
 
   // ---- STEP 3: PM VERDICT (must cite the disagreement) ----
@@ -1141,10 +1146,29 @@ Respond STRICT JSON only (no markdown):
  */
 export async function aiCouncilVerify(candidates, deps, market, opts = {}) {
   // Availability gate — FreeLLMAPI router health (cached probe).
-  if (!candidates?.length || !(await aiEngineOnline(deps))) return { verdicts: {}, model: null, online: false };
+  if (!candidates?.length) return { verdicts: {}, model: null, online: false };
+  if (!(await aiEngineOnline(deps))) {
+    // v21.36.4 observability: an offline seat used to be silent — the board
+    // just showed "structural abstain" with no reason. One compact line so a
+    // watchdog/log review can tell a real router outage from a breaker miss.
+    if (process.env.SMARTAI_COUNCIL_DEBUG) console.warn('[council] offline — FreeLLMAPI probe/breaker says unavailable');
+    return { verdicts: {}, model: null, online: false };
+  }
   if (councilDebateEnabled()) {
-    const debated = await aiCouncilDebate(candidates, deps, market, opts).catch(() => null);
-    if (debated && debated.online) return debated;
+    // v21.36.4 [ULTRA-FAST BOARD]: the 3-step debate is the DEEP-modal
+    // quality path (30s for 6 symbols). The 30-60s board scan should not
+    // pay that tax on every rescan — one strict-JSON council call returns
+    // all verdicts in ~6s with the SAME schema. Deep asks keep the debate.
+    // Default ON preserves the existing contract; set
+    // AI_COUNCIL_BOARD_DEBATE=off to run the fast single-shot on scans.
+    const boardDebate = String(process.env.AI_COUNCIL_BOARD_DEBATE ?? '').trim().toLowerCase();
+    const boardDebateOff = ['0', 'off', 'false', 'no', 'disable', 'disabled'].includes(boardDebate);
+    const wantDebate = opts.deep === true || !boardDebateOff;
+    if (wantDebate) {
+      const debated = await aiCouncilDebate(candidates, deps, market, opts).catch(() => null);
+      if (debated && debated.online) return debated;
+      if (process.env.SMARTAI_COUNCIL_DEBUG) console.warn('[council] debate step failed — falling back to single-shot');
+    }
   }
   const norm = candidates.map(toCouncilCandidate).filter(c => c && c.symbol);
   if (norm.length === 0) return { verdicts: {}, model: null, online: false };
@@ -1160,28 +1184,41 @@ export async function aiCouncilVerify(candidates, deps, market, opts = {}) {
   // back into the sentiment cache for the next cycle.
   const sentCtx = v2ModelsEnabled() ? sentimentContextFor(market) : null;
   const sentLines = sentCtx ? `\n${sentCtx}` : '';
-  const prompt = `You are the AI COUNCIL — the final verification layer of a ${MODELS.length}-model superintelligence ensemble for a ${venue}.
+  // v21.36.4 [COVERAGE]: one 6-symbol ask intermittently returned only 2-4
+  // verdicts (the routed model silently dropped rows). Split into batches of
+  // 3 and run them concurrently — same wall-time, full symbol coverage.
+  const COUNCIL_BATCH = 3;
+  const batches = [];
+  for (let i = 0; i < compact.length; i += COUNCIL_BATCH) batches.push(compact.slice(i, i + COUNCIL_BATCH));
+  const askBatch = (batch) => {
+    const prompt = `You are the AI COUNCIL — the final verification layer of a ${MODELS.length}-model superintelligence ensemble for a ${venue}.
 
 Below are pre-scored consensus candidates. For EACH, analyze deeply and either CONFIRM or VETO. Be strict: an edge must be confluence-driven, not single-factor.
 
-${JSON.stringify(compact, null, 1)}${sentLines}
+${JSON.stringify(batch, null, 1)}${sentLines}
 
 Respond STRICT JSON only (no markdown):
 {"verdicts":{"SYMBOL":{"verdict":"LONG"|"SHORT"|"AVOID","confidence":0-100,"note":"max 12 words","analysis":"2 sentences: your reasoning chain — indicator state, timing quality, risk"}}}`;
-
-  // The ONE shared FreeLLMAPI chain — sentinel health-aware.
-  // opts.deep = true → councilAskDeep (auto:smart) for the deep path
-  // (getDeepSignal). The board path always passes opts.deep=false and
-  // follows the active SMART/BALANCED/FAST profile.
-  const asked = opts.deep ? await councilAskDeep(prompt, deps) : await councilAsk(prompt, deps);
-  const verdicts = asked.json;
-  const model = asked.model;
+    // The ONE shared FreeLLMAPI chain — sentinel health-aware.
+    // opts.deep = true → councilAskDeep (auto:smart) for the deep path
+    // (getDeepSignal). The board path follows the active profile.
+    return opts.deep ? councilAskDeep(prompt, deps) : councilAsk(prompt, deps);
+  };
+  const askedAll = await Promise.all(batches.map(askBatch));
+  let model = null;
+  const verdicts = {};
+  let sentiment = null;
+  for (const asked of askedAll) {
+    if (asked?.model) model = model || asked.model;
+    const j = asked?.json;
+    if (j?.verdicts && typeof j.verdicts === 'object') Object.assign(verdicts, j.verdicts);
+    if (j?.sentiment) sentiment = j.sentiment;
+  }
 
   // fold the council's optional sentiment read back into the cache
-  if (verdicts?.sentiment) absorbCouncilSentiment({ ...verdicts.sentiment, model }, market);
+  if (sentiment) absorbCouncilSentiment({ ...sentiment, model }, market);
 
-  const out = verdicts?.verdicts && typeof verdicts.verdicts === 'object' ? verdicts.verdicts : {};
-  return { verdicts: out, model, online: model != null };
+  return { verdicts, model, online: model != null };
 }
 
 // ---------------- the signal board ----------------
@@ -2314,11 +2351,16 @@ async function _computeBoard(mkt, deps, opts = {}) {
       // v21.13.x recheck (C1): offline council = honest structural
       // abstain, NOT a missing seat (pehle the seat silently vanished —
       // the committee roster was environment-dependent 15/16).
+      // v21.36.4: distinguish "router offline" from "this symbol missing
+      // from an otherwise-live council response" — the old label called a
+      // live council "offline" whenever the model omitted one symbol.
       votes.push({
         id: 'aicouncil', name: 'AI Council (LLM)', role: MODELS.find(m => m.id === 'aicouncil').role,
         weight: MODELS.find(m => m.id === 'aicouncil').weight * (_ad?.aicouncil?.mul ?? 1),
         dir: 0, conf: 0, na: true,
-        reasons: ['AI Council offline (no provider verdict) — structural abstain'],
+        reasons: [council.online
+          ? 'AI Council live, but returned no verdict for this symbol — structural abstain'
+          : 'AI Council offline (no provider verdict) — structural abstain'],
       });
     }
     // v20.9.4 FIX (H2 — meta-ensemble ab PRODUCTION me wired):
@@ -3365,12 +3407,15 @@ async function _computeDeepSignal(sym, mkt, deps, opts, cacheKey) {
   } else {
     // v21.13.x recheck (C1): offline council → honest structural abstain
     // (the seat never silently vanishes from the deep roster either)
+    // v21.36.4: live council + missing symbol ≠ router offline.
     const _ad = adaptiveMultipliers(_ledgerModelStats());
     votes.push({
       id: 'aicouncil', name: 'AI Council (LLM)', role: MODELS.find(m => m.id === 'aicouncil').role,
       weight: MODELS.find(m => m.id === 'aicouncil').weight * (_ad?.aicouncil?.mul ?? 1),
       dir: 0, conf: 0, na: true,
-      reasons: ['AI Council offline (no provider verdict) — structural abstain'],
+      reasons: [council?.online
+        ? 'AI Council live, but returned no verdict for this symbol — structural abstain'
+        : 'AI Council offline (no provider verdict) — structural abstain'],
     });
   }
   // v20.9.4 [H2 — meta-ensemble wiring]: deep FINAL aggregation bhi

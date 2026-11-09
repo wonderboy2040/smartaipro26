@@ -96,7 +96,9 @@ export async function councilAsk(prompt, _deps = null, opts = {}) {
     out = await freeLlmJson(prompt, {
       model,
       temperature: opts.temperature ?? (deep ? 0.15 : 0.2),
-      maxTokens: opts.maxTokens ?? (deep ? 3072 : 2048),
+      // v21.36.4: 2048 truncated multi-symbol council JSON (only 3-4 of 6
+      // verdicts survived). 4096 covers a full 6-symbol board with analysis.
+      maxTokens: opts.maxTokens ?? 4096,
       timeoutMs: budget,
       ...(opts.system ? { system: opts.system } : {}),
     });
@@ -106,7 +108,12 @@ export async function councilAsk(prompt, _deps = null, opts = {}) {
   }
   const json = out?.json;
   if (!json || typeof json !== 'object' || Array.isArray(json)) {
-    engineTrack('freellmapi', new Error('freellmapi no-json response'));
+    // v21.36.3 LIVE-CAUGHT: a PROSE answer is a model-quality miss, not a
+    // router outage. Arming the shared breaker here (2 misses → 30-300s
+    // cooldown) made the whole board's AI Council seat show "offline"
+    // right after a debate step returned unparseable text. The strict-JSON
+    // lane already retries without response_format; keep the breaker for
+    // real transport/HTTP failures only.
     return { json: null, model: null };
   }
   engineOk('freellmapi');
