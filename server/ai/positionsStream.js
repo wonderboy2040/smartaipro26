@@ -55,6 +55,13 @@ let _lastSig = new Map();    // id → signature of the last PUSHED state
 let _lastEntriesLen = -1;    // structural-change anchors
 let _lastPositionsLen = -1;
 let _lastOpenIds = new Set();
+// v21.36.1 [CONNECT-SNAPSHOT FIX]: a NEW subscriber must always receive an
+// initial `positions` frame. The diff-poller may consider the book unchanged
+// (signatures from a previous client, no OPEN rows) → without this flag an
+// idle/empty book showed only the 15s heartbeat and the panel stayed on
+// "loading". Set on connect when the cached view is stale; consumed by the
+// next poll (which then broadcasts the FULL fresh snapshot).
+let _forceSnapshot = false;
 
 /** Pure cadence decision — exported for the regression suite. */
 export function nextDelay(hasClients, indiaOpen) {
@@ -88,13 +95,15 @@ async function _poll() {
 
     const openIds = new Set(positions.filter(p => p.status === 'OPEN').map(p => p.id));
     // structural = open/close transition, book-size change or audit-row change
-    let structural = entries.length !== _lastEntriesLen
+    let structural = _forceSnapshot
+      || entries.length !== _lastEntriesLen
       || positions.length !== _lastPositionsLen;
     for (const id of openIds) if (!_lastOpenIds.has(id)) structural = true;
     for (const id of _lastOpenIds) if (!openIds.has(id)) structural = true;
     if (_lastSig.size === 0) structural = true; // first ever push
 
     if (structural) {
+      _forceSnapshot = false;
       _broadcast('positions', { positions, entries, stats: view.stats || null, ts: _lastView.ts });
       _lastSig.clear();
       for (const p of positions) _lastSig.set(p.id, _sigOf(p));
@@ -182,17 +191,23 @@ export function positionsStreamHandler(req, res) {
       return false;
     }
   });
+  const hadClients = _clients.size > 0;
   _clients.add(write);
 
-  // Fresh-enough view → paint instantly; otherwise the shared poller's
-  // first tick (≤250ms away) delivers the snapshot to everyone.
-  if (_lastView && Date.now() - _lastView.ts < SNAPSHOT_FRESH_MS) {
+  // Fresh-enough view → paint instantly. A stale/absent view must STILL
+  // produce an initial snapshot: flag the shared poller so its next tick
+  // broadcasts the FULL `positions` frame even when the book signature says
+  // "unchanged" (the empty/idle-book "panel stuck loading" bug).
+  const fresh = _lastView && Date.now() - _lastView.ts < SNAPSHOT_FRESH_MS;
+  if (fresh) {
     try {
       write(`event: positions\ndata: ${JSON.stringify({
         positions: _lastView.positions, entries: _lastView.entries,
         stats: _lastView.stats || null, ts: _lastView.ts,
       })}\n\n`);
     } catch { /* client gone */ }
+  } else {
+    _forceSnapshot = true;
   }
 
   const keepalive = setInterval(() => {
@@ -202,7 +217,10 @@ export function positionsStreamHandler(req, res) {
   }, 15000);
   if (typeof keepalive.unref === 'function') keepalive.unref();
 
-  _ensureTimer();
+  // First client after the poller parked: a pending idle timer can be up to
+  // 15s away — force the documented ≤250ms first push instead.
+  if (hadClients) _ensureTimer();
+  else _schedule(250);
 
   req.on('close', () => {
     clearInterval(keepalive);
@@ -229,4 +247,5 @@ export function __resetPositionsStreamForTests() {
   _lastEntriesLen = -1;
   _lastPositionsLen = -1;
   _lastOpenIds = new Set();
+  _forceSnapshot = false;
 }

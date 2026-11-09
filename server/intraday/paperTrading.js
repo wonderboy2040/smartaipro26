@@ -505,10 +505,27 @@ function _closePart(trade, qty, price, reason) {
 // SL trigger ho jata (cross-domain false fill).
 function _quoteFor(t, quotes, mkt, byMarket = null) {
   const qk = byMarket?.[`${mkt}|${t.symbol}`] || quotes?.[`${mkt}|${t.symbol}`];
-  if (qk?.price > 0) return qk;
   const plain = quotes?.[t.symbol];
-  if (mkt === 'CRYPTO' || mkt === 'INDIA') return plain?.price > 0 ? plain : null;
-  // USD desks: plain key tabhi jab src INR-denominated na ho
+  // v21.36.1 [DOMAIN GUARD v2 — LIVE-CAUGHT]: the CRYPTO desk's paper P&L
+  // is INR-domain. A USDT/USDC-sourced quote (futures/global overlay) must
+  // NEVER move it — live recheck me ek ₹7 DOGE trade $0.069 quote se instant
+  // fake T2/SL ho gayi thi. Src-less legacy/test quotes stay accepted.
+  const isUsdSrc = (q) => /usdt|usdc|global|fut/i.test(String(q?.src || ''));
+  if (mkt === 'CRYPTO') {
+    if (qk?.price > 0 && !isUsdSrc(qk)) return qk;
+    if (plain?.price > 0 && !isUsdSrc(plain)) return plain;
+    return null;
+  }
+  if (mkt === 'INDIA') {
+    // India plain key Groww/Yahoo; a coindcx-sourced same-name crypto
+    // ticker must be rejected (cross-desk symbol collision).
+    if (qk?.price > 0 && !/coindcx/i.test(String(qk.src || ''))) return qk;
+    if (plain?.price > 0 && !/coindcx/i.test(String(plain.src || ''))) return plain;
+    return null;
+  }
+  // USD desks (FUTURES/GLOBALFUTURES): qualified key pehle, plain fallback
+  // sirf jab src INR-denominated na ho.
+  if (qk?.price > 0 && !/inr/i.test(String(qk.src || ''))) return qk;
   if (plain?.price > 0 && !/inr/i.test(String(plain.src || ''))) return plain;
   return null;
 }

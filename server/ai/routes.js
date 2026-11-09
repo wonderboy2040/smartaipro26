@@ -4104,9 +4104,17 @@ export function registerAITradingRoutes(app, deps) {
       // pass below had a chance to act on it.
       if (mtfAutoOpenCount() <= 0) return;
       const combinedQuotes = { ...(getLatestQuotes()?.data || {}) };
-      // v21.23.8: EQUITY SIM overlay — 3s fast loop ka evaluatePaper is qualified
+      // v21.23.8: EQUITY SIM overlay - 3s fast loop ka evaluatePaper is qualified
       // GLOBALFUTURES|SYM quotes se EQUITY SIM paper trades ke SL/T1/T2 evaluate karta hai.
       Object.assign(combinedQuotes, await mtfGlobalQuoteOverlay());
+      // v21.36.1 [PAPER CROSS-DOMAIN FIX — LIVE-CAUGHT]: the USDT overlay
+      // below deliberately writes `CRYPTO|SYM` for the deep monitor (its
+      // perp rows carry market:'CRYPTO' but price in USDT). Feeding that
+      // same map to evaluatePaper corrupted the INR-domain CRYPTO paper
+      // desk: a ₹7 DOGE trade evaluated against $0.069 → instant fake
+      // T2_HIT. evaluatePaper must get the pre-overlay (true desk-domain)
+      // snapshot; the deep monitor keeps the qualified overlay.
+      const paperQuotes = { ...combinedQuotes };
       const usdtMap = await mtfUsdtQuoteMap().catch(() => null);
       if (usdtMap instanceof Map) {
         for (const [sym, px] of usdtMap.entries()) {
@@ -4197,7 +4205,7 @@ export function registerAITradingRoutes(app, deps) {
           }
         }
       }
-      try { evaluatePaper(combinedQuotes, []); } catch { /* non-fatal */ }
+      try { evaluatePaper(paperQuotes, []); } catch { /* non-fatal */ }
     } catch (e) {
       // v21.35.0 [F-5 SILENT-LANE CURE]: 3s fast SL-trail loop ka outer catch
       // throw ko swallow karta tha — LIVE positions ki SL ratchet/TP1 book

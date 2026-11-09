@@ -184,6 +184,33 @@ describe('paperTrading — FUTURES (USDT) desk support', () => {
     expect(row?.lastPrice).toBe(83050);
   });
 
+  it('DEEP RECHECK [C5]: a USDT-sourced quote never moves an INR-domain CRYPTO paper trade (live fake-T2 regression)', () => {
+    const r = openPaperTrade({
+      symbol: 'DOGE', market: 'CRYPTO', direction: 'SHORT',
+      entry: 7.0, qty: 100, stopLoss: 7.05, target1: 6.98, target2: 6.90,
+      source: 'api-recheck',
+    });
+    expect(r.error).toBeUndefined();
+    const ev: unknown[] = [];
+    // The 3s fast-sl-trail loop used to overlay the perp USDT price INTO the
+    // CRYPTO qualified key — $0.069 vs ₹7.00 → instant fake T2_HIT.
+    evaluatePaper({
+      DOGE: { price: 0.0691, src: 'coindcx-fut-usdt' },
+      'CRYPTO|DOGE': { price: 0.0691, src: 'coindcx-fut-usdt' },
+    }, ev);
+    const row = getPaperSummary().open.find(t => t.id === r.trade.id);
+    expect(row?.status).toBe('OPEN');
+    expect(row?.lastPrice).toBe(7.0); // untouched by the USDT tick
+    expect(row?.t1Hit).toBe(false);
+
+    // The real INR quote still moves it normally (T1 50% book).
+    evaluatePaper({ 'CRYPTO|DOGE': { price: 6.98, src: 'coindcx-inr' } }, ev);
+    const after = getPaperSummary().open.find(t => t.id === r.trade.id);
+    expect(after?.status).toBe('PARTIAL');
+    expect(after?.lastPrice).toBe(6.98);
+    expect(after?.remainingQty).toBe(50);
+  });
+
   it('DEEP RECHECK [C2]: tradingCosts classifies FUTURES/GLOBALFUTURES as crypto taker-fee (never ₹20 equity brokerage)', () => {
     expect(instrumentTypeOfTrade({ market: 'FUTURES', symbol: 'BTC' })).toBe('crypto');
     expect(instrumentTypeOfTrade({ market: 'GLOBALFUTURES', symbol: 'AAPL' })).toBe('crypto');

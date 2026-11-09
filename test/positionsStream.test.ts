@@ -165,6 +165,27 @@ describe('v10.5.3 positions stream — price-driven push, not a 5s poll', () => 
     expect(snaps[1].data.positions[0].id).toBe('agent-1');
   });
 
+  it('an idle book with a STALE cached view still sends a NEW client the FULL snapshot', async () => {
+    // CLOSED-only book: openIds is empty, and after the first poll the
+    // signature is populated → the next poll is NOT structural. This is the
+    // exact shape that left a second client with only the 15s heartbeat.
+    setView([pos({ status: 'CLOSED', closePrice: 100, pnlINR: 0 })]);
+    const first = mkRes();
+    positionsStreamHandler(mkReq(), first.res);
+    await __tickForTests();
+    expect(sseFrames(first.writes).filter(f => f.event === 'positions')).toHaveLength(1);
+
+    // Simulate >5s passing so the cached view is no longer "fresh".
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000);
+    const second = mkRes();
+    positionsStreamHandler(mkReq(), second.res);
+    await __tickForTests();
+    const snaps = sseFrames(second.writes).filter(f => f.event === 'positions');
+    expect(snaps).toHaveLength(1);
+    expect(snaps[0].data.positions[0].status).toBe('CLOSED');
+    spy.mockRestore();
+  });
+
   it('cadence rules: cached desks 1s · India-open 5s · nobody-watching 15s', () => {
     expect(nextDelay(true, false)).toBe(1000);  // crypto/futures/global only
     expect(nextDelay(true, true)).toBe(5000);   // an India position is open
