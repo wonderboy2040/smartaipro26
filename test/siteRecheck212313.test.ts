@@ -365,7 +365,9 @@ describe('v21.23.13 D3 — order-body side-strictness (last silent defaults clos
 describe('v21.23.13 D4 — Yahoo candle local ascending sort', () => {
   it('signals.js fetchYahooCandles sorts locally before the ≥30 gate', () => {
     const src = read('server/ai/signals.js');
-    const m = src.match(/const out = \[\];[\s\S]{0,900}?out\.sort\(\(a, b\) => a\.time - b\.time\);\s*\n\s*return out\.length >= 30 \? out : null;/);
+    // 900 chars was too tight once the S2-parity comment landed above the
+    // sort; 2000 still keeps the pin scoped to this one function body.
+    const m = src.match(/const out = \[\];[\s\S]{0,2000}?out\.sort\(\(a, b\) => a\.time - b\.time\);\s*\n\s*return out\.length >= 30 \? out : null;/);
     expect(m).toBeTruthy();
   });
   it('expertMode fetchYahooChartCandles sorts locally before cache/return', () => {

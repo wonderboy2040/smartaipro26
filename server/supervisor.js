@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // ============================================================
 // SmartAI v20.0.1 — supervisor.js (ANTI-FREEZE SUPERVISOR)
 //            v19.2 engine + v20.0.1 DEPS AUTO-INSTALL

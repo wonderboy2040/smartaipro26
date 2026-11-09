@@ -54,9 +54,9 @@
   <text x="706" y="136" class="ts">selfHeal · logGovernor · consoleGuard</text>
   <text x="706" y="148" class="ts">compression · withAsyncRouteGuard · pinAuth</text>
 
-  <!-- ollama -->
+  <!-- FreeLLMAPI -->
   <rect class="boxExt" x="1050" y="104" width="250" height="44"/>
-  <text x="1064" y="122" class="th">Ollama  (localhost:11434)</text>
+  <text x="1064" y="122" class="th">FreeLLMAPI  (127.0.0.1:31415)</text>
   <text x="1064" y="138" class="ts">separate process · RAM-limited host</text>
 
   <!-- telegram bot -->
@@ -70,7 +70,7 @@
   <text x="316" y="120" class="wlbl">forks + auto npm install</text>
   <text x="636" y="120" class="wlbl">launches child</text>
   <line class="wireO" x1="990" y1="140" x2="1050" y2="140" marker-end="url(#arwO)"/>
-  <text x="994" y="134" class="wlblo">HTTP :11434</text>
+  <text x="994" y="134" class="wlblo">HTTP :31415</text>
   <line class="wireO" x1="1350" y1="150" x2="990" y2="160" marker-end="url(#arwO)"/>
   <text x="1150" y="170" class="wlblo">calls back into /api (siteSync · siteAgents)</text>
 
@@ -179,11 +179,11 @@
 
   <!-- col 2: verification + gates -->
   <rect class="boxExt" x="380" y="568" width="300" height="90"/>
-  <text x="394" y="586" class="th">Direction Verification — Ollama TRIO</text>
-  <text x="394" y="602" class="ts">llmSentinel.js · evaluateMtfRowWithOllamaTrio</text>
+  <text x="394" y="586" class="th">Direction Verification — FreeLLMAPI AI GUARD</text>
+  <text x="394" y="602" class="ts">llmSentinel.js · evaluateMtfRowWithAiGuard</text>
   <text x="394" y="616" class="ts">fast 3:8b · deep 3:8b · vision 2.5vl:7b</text>
   <text x="394" y="630" class="ts">approvedCount ≥ 2 = verified</text>
-  <text x="394" y="644" class="ts">fire-and-forget · 30s cache · :11434</text>
+  <text x="394" y="644" class="ts">breaker-gated - fast-fail - :31415</text>
 
   <rect class="boxWarn" x="380" y="672" width="300" height="90"/>
   <text x="394" y="690" class="th">Pre-Trade Entry Gates  [ENFORCE]</text>
@@ -243,9 +243,9 @@
   <text x="1094" y="828" class="ts">kill-switch · consecutiveLossPause</text>
   <text x="1094" y="842" class="ts">L1/L2/L3 reconciler kills</text>
 
-  <!-- Ollama link to engine -->
+  <!-- FreeLLMAPI link to engine -->
   <line class="wireO" x1="1180" y1="148" x2="540" y2="568" marker-end="url(#arwO)"/>
-  <text x="820" y="360" class="wlblo">Ollama trio (3 seats)</text>
+  <text x="820" y="360" class="wlblo">FreeLLMAPI AI GUARD (3 seats)</text>
 
   <!-- ============ LANE E : MCP DATA-AGENT MESH ============ -->
   <rect class="lane" x="30" y="876" width="1660" height="120"/>
@@ -344,7 +344,7 @@
   <text x="794" y="1294" class="ts">mcp-coindcx.json (keyed wallet, masked)</text>
   <text x="794" y="1308" class="ts">mcp-portfolio · config/champion.json</text>
   <text x="794" y="1322" class="ts">.env  →  APP_PIN · API_TOKEN · CoinDCX keys</text>
-  <text x="794" y="1336" class="ts">  OLLAMA_* · GO_LIVE_MIN_TRADES=16</text>
+  <text x="794" y="1336" class="ts">  FREELLMAPI_* · GO_LIVE_MIN_TRADES=16</text>
   <text x="794" y="1350" class="ts">server/data/logs · logs/ app.log · watchdog-exit.log</text>
   <text x="794" y="1364" class="ts">models/ · ml-service/ (onnx expert picks)</text>
 

@@ -57,7 +57,7 @@ import { evaluateMetaGate } from './metaModel.js';
 import { latencyRecorder } from './lib/latencyStats.js';
 // v21.23.11 MIRROR-SHIELD L2: live-tick stamp forming bar = TRUE newest.
 import { ensureAscending } from './lib/candles.js';
-import { ollamaStatus, evaluateMtfRowWithOllamaTrio, getOllamaTrioModels } from './llmSentinel.js';
+import { evaluateMtfRowWithAiGuard, getAiGuardModels } from './llmSentinel.js';
 import { feeBreakevenFloor, defaultRoundTripFeePct } from '../exec/sizing.js';
 import { fetchFuturesPrices } from './futures.js';
 import { resolveDirection, checkDirectionLock } from './directionLock.js';
@@ -236,7 +236,7 @@ export function fuseDualTf({ symbol, market, boardSig = null, plan = null, snap 
   const wp = boardSideMatches ? (boardSig?.superIntel?.winProb || null) : null;
   if (wp && wp.verdict === 'EDGE') { score += 3; drivers.push(`P(win) EDGE (+3) — ${wp.pWin}% win · EV ${wp.evRealisticR ?? wp.evR}R`); }
   else if (wp && wp.verdict === 'NO-EDGE') { score -= 5; drivers.push(`P(win) NO-EDGE (−5) — ${wp.pWin}% win · EV ${wp.evRealisticR ?? wp.evR}R`); }
-  // v21.18.0 TOP AI AGENTS + SVA + LOCAL OLLAMA COUNCIL FUSE:
+  // TOP AI AGENTS + SVA + FREELMAPI COUNCIL FUSE:
   const rawSva = boardSig?.verify || boardSig?.sva || null;
   const rawSvaAct = String(rawSva?.action || '').toUpperCase();
   const sva = boardSideMatches ? rawSva : null;
@@ -250,9 +250,9 @@ export function fuseDualTf({ symbol, market, boardSig = null, plan = null, snap 
   const councilV = boardSideMatches ? rawCouncilV : '';
   const councilModel = boardSig?.aiCouncil?.model || boardSig?.aiConfirm?.model || 'local';
   if (councilV && (councilV === side || councilV === 'AGREE' || councilV === 'CONFIRM')) {
-    score += 2; drivers.push(`AI Council / Ollama (${councilModel}) CONFIRM (+2)`);
+    score += 2; drivers.push(`AI Council / FreeLLMAPI (${councilModel}) CONFIRM (+2)`);
   } else if (councilV === 'AVOID' || councilV === 'DISAGREE' || councilV === 'SKIP') {
-    score -= 5; drivers.push(`AI Council / Ollama ${councilV} (−5)`);
+    score -= 5; drivers.push(`AI Council / FreeLLMAPI ${councilV} (−5)`);
   }
 
   // ---- P0 DIRECTION GUARDS (audit/direction-guards) -------------------------
@@ -385,7 +385,7 @@ export function fuseDualTf({ symbol, market, boardSig = null, plan = null, snap 
     return Math.round(Math.min(82, Math.max(52, 50 + score * 0.32)));
   })();
 
-  const ollamaTrio = evaluateMtfRowWithOllamaTrio({
+  const aiGuard = evaluateMtfRowWithAiGuard({
     symbol,
     side,
     mode: modeId,
@@ -407,16 +407,15 @@ export function fuseDualTf({ symbol, market, boardSig = null, plan = null, snap 
     netRR_T2: plan?.plan?.netRR?.t2 ?? 1.5,
   });
 
-  // P2 CLOUD AI LANE (accurate trade signals lever): when the site is in
-  // cloud/both mode the board seats are served by OpenCode. An independent
-  // cloud CONFIRM on an ALREADY-strong row (score ≥ 75, no trap/wall/direction
-  // conflict) earns a small +3 driver; a cloud CAUTION on a row already ≥ 80
-  // is honest-capped to 74 so a weak-looking "elite" never ships on a single
-  // engine's rubber-stamp. Pure helper (testable in isolation) — it rewards
-  // genuine cross-engine agreement and NEVER rescues a weak row.
+  // FREELMAPI AI LANE (accurate trade signals lever): an independent live
+  // FreeLLMAPI CONFIRM on an ALREADY-strong row (score ≥ 75, no trap/wall/
+  // direction conflict) earns a small +3 driver; a CAUTION on a row already
+  // ≥ 80 is honest-capped to 74 so a weak-looking "elite" never ships on a
+  // single engine's rubber-stamp. Pure helper (testable in isolation) — it
+  // rewards genuine AI agreement and NEVER rescues a weak row.
   {
     const lane = applyCloudAiLane({
-      score, cap, tier, trio: ollamaTrio, drivers,
+      score, cap, tier, trio: aiGuard, drivers,
       trapVeto, zoneWallVeto,
       boardSideConflict: boardOpposes, svaConflict: svaOpposes,
     });
@@ -472,9 +471,8 @@ export function fuseDualTf({ symbol, market, boardSig = null, plan = null, snap 
   if (trapVeto) blockers.push('liquidity sweep / trap veto active');
   if (zoneWallVeto) blockers.push('fresh supply/demand zone wall veto');
   if (!directionVerified) blockers.push('direction not pakka verified');
-  if (ollamaTrio && ollamaTrio.approvedCount < 2) {
-    const lane = ollamaTrio.engine === 'opencode' ? 'cloud AI' : 'local AI';
-    blockers.push(`${lane} ensemble caution (<2/3 models verified)`);
+  if (aiGuard && aiGuard.approvedCount < 2) {
+    blockers.push(`FreeLLMAPI AI guard caution (<2/3 seats verified)`);
   }
   if (plan?.trigger?.opposingFlow) blockers.push('action-TF opposing signal direction');
   if (plan?.trigger?.reversalRisk) blockers.push('action-TF reversal/rejection wick risk');
@@ -540,7 +538,7 @@ export function fuseDualTf({ symbol, market, boardSig = null, plan = null, snap 
       highAccuracy95Ready: pWinCalibrated != null && winRatePct >= 65 && dualAligned && !!plan?.triggerFired && !trapVeto && !zoneWallVeto && finalDirectionVerified,
       institutional8: defaultInst8,
     },
-    ollamaTrio,
+    aiGuard,
     side, dir,
     grade: plan?.grade ?? null,
     bias: plan?.bias ?? null,
@@ -830,15 +828,15 @@ function overlayLiveTick(candles, liveLtp) {
 const METALS_SET = new Set(['XAU', 'XAG', 'XAUUSDT', 'XAGUSDT']);
 const EQUITY_SIM_SET = new Set(['NVDA', 'TSLA', 'AAPL', 'MSFT', 'META', 'AMZN', 'GOOGL', 'AMD', 'SPY', 'QQQ']);
 
-// P2 CLOUD AI LANE — pure helper, exported for tests. Applies the OpenCode
-// cross-engine verdict to a row that was just score-finalised:
+// FREELMAPI AI LANE — pure helper, exported for tests. Applies the live
+// router verdict to a row that was just score-finalised:
 //   • CONFIRM + already-strong (score ≥ 75, no trap/wall/direction conflict)
-//     → +3 driver (the 80+ lever: independent cloud confirmation on a
+//     → +3 driver (the 80+ lever: independent AI confirmation on a
 //     genuinely-pakka setup only — it can never manufacture a weak 80).
 //   • CAUTION + already ≥ 80 → honest-cap to 74 (a weak-looking "elite"
-//     that one engine rubber-stamps is downgraded, not trusted).
-// Non-opencode engines (Ollama local / rule) are ignored here — the local
-// path keeps its own +2/+4 vote-score, unchanged.
+//     that the router rubber-stamps is downgraded, not trusted).
+// Rule-based seats (no live FreeLLMAPI answer) are ignored here — the
+// local vote-score path keeps its own +2/+4 lever, unchanged.
 export function applyCloudAiLane({
   score, cap = null, tier = 'WATCH', trio = null,
   drivers = null,
@@ -846,14 +844,14 @@ export function applyCloudAiLane({
   boardSideConflict = false, svaConflict = false,
 } = {}) {
   const next = { score, cap, tier };
-  if (trio?.engine === 'opencode' && trio.liveVerdict) {
+  if (trio?.engine === 'freellmapi' && trio.liveVerdict) {
     if (trio.liveVerdict === 'CONFIRM' && score >= 75 && !trapVeto && !zoneWallVeto && !boardSideConflict && !svaConflict) {
       next.score = Math.round(clamp(score + 3, 1, 99));
-      if (drivers) drivers.push('🏁 Cloud AI CONFIRM (+3)');
+      if (drivers) drivers.push('🏁 FreeLLMAPI CONFIRM (+3)');
     } else if (trio.liveVerdict === 'CAUTION' && score >= 80) {
       next.cap = Math.min(cap ?? 99, 74);
       next.score = next.cap < score ? next.cap : score;
-      if (drivers) drivers.push('⚠ Cloud AI CAUTION (capped ≤74)');
+      if (drivers) drivers.push('⚠ FreeLLMAPI CAUTION (capped ≤74)');
     }
     next.tier = superTier(next.score);
   }
@@ -1073,9 +1071,9 @@ export async function buildDualRow({ symbol, market, boardSig = null, modeId = '
     timePlan: plan?.ok ? plan.timePlan : null,
     warnings: plan?.warnings ?? [],
     ltpInr: ((ccy === 'USDT' || ccy === 'USD') && fxShown && plan?.ltp) ? Math.round(plan.ltp * fxShown * 100) / 100 : null,
-    // v21.22.0: Top AI Agents + 3-Model Local Ollama Trio attribution + 95% Wallet & Fee-Protected Exit rules
+    // Top AI Agents + FreeLLMAPI AI guard attribution + wallet/fee rules.
     aiAgents: (() => {
-      const ol = ollamaStatus();
+      const guard = getAiGuardModels();
       const topSeats = Array.isArray(boardSig?.votes)
         ? boardSig.votes
           .filter(v => (fuse.dir > 0 && v.dir > 0) || (fuse.dir < 0 && v.dir < 0))
@@ -1089,18 +1087,17 @@ export async function buildDualRow({ symbol, market, boardSig = null, modeId = '
         topSeats,
         svaAction: boardSig?.verify?.action ?? null,
         svaScore: boardSig?.verify?.score != null ? Math.round(Number(boardSig.verify.score)) : null,
-        councilModel: boardSig?.aiCouncil?.model || (ol?.reachable ? `ollama:${ol.model}` : ol?.model ? `ollama:${ol.model} (standby)` : null),
-        ollamaReachable: !!ol?.reachable,
-        ollamaScanModel: ol?.model || 'qwen3:8b',
-        ollamaDeepModel: ol?.deepModel || 'deepseek-r1:14b',
-        ollamaTrioModels: ol?.trioModels || ['qwen3:8b', 'deepseek-r1:14b', 'qwen2.5vl:7b'],
-        // v21.23.2 HONESTY: fallback '3/3 OLLAMA AI LOCK' JHOOTA tha jab Ollama
-        // offline hai (rule-based guard = 0 live models, "3/3 AI LOCK" claim
-        // nahin). Sentinel ka honestLabel use karo — offline pe "Rule-Based
-        // Guard n/3" bolta hai, live pe "Live Ollama (...)".
-        ollamaVerdict: fuse.ollamaTrio?.honestLabel || fuse.ollamaTrio?.verdict || 'RULE-GUARD (local AI offline)',
+        councilModel: boardSig?.aiCouncil?.model || (guard.reachable ? `freellmapi:${guard.fastModel}` : null),
+        aiGuardReachable: !!guard.reachable,
+        aiGuardFastModel: guard.fastModel,
+        aiGuardDeepModel: guard.deepModel,
+        aiGuardModels: guard.models,
+        // HONESTY: the fallback must never claim a live AI lock. The
+        // sentinel's honestLabel says "Rule-Based Guard n/3" when the
+        // router is offline and "Live FreeLLMAPI (...)" when it answered.
+        aiGuardVerdict: fuse.aiGuard?.honestLabel || fuse.aiGuard?.verdict || 'RULE-GUARD (FreeLLMAPI offline)',
         councilVerdict: boardSig?.aiCouncil?.verdict || boardSig?.aiConfirm?.verdict || (fuse.dualAligned ? 'CONFIRM' : 'WAIT'),
-        councilNote: boardSig?.aiCouncil?.note || boardSig?.aiCouncil?.analysis || fuse.ollamaTrio?.liveNote || null,
+        councilNote: boardSig?.aiCouncil?.note || boardSig?.aiCouncil?.analysis || fuse.aiGuard?.liveNote || null,
       };
     })(),
     feeProtection: plan?.ok && plan.plan?.entry > 0 && normalizeSide(fuse.side) ? {
@@ -1261,8 +1258,8 @@ function rankDualRows(rows, minBar = 75) {
     if (bClean !== aClean) return bClean - aClean;
     const aFresh = (a.earlyIgnition || a.trigger?.pullbackReclaim || ((a.context?.barsInTrend ?? 5) <= 8)) ? 3 : 0;
     const bFresh = (b.earlyIgnition || b.trigger?.pullbackReclaim || ((b.context?.barsInTrend ?? 5) <= 8)) ? 3 : 0;
-    const aAi = (a.ollamaTrio?.approvedCount ?? 0) >= 3 ? 2 : 0;
-    const bAi = (b.ollamaTrio?.approvedCount ?? 0) >= 3 ? 2 : 0;
+    const aAi = (a.aiGuard?.approvedCount ?? 0) >= 3 ? 2 : 0;
+    const bAi = (b.aiGuard?.approvedCount ?? 0) >= 3 ? 2 : 0;
     const aEff = (a.superScore ?? 0) + (a.directionVerified ? 4 : 0) + aFresh + aAi + (a.dualAligned ? 1 : 0);
     const bEff = (b.superScore ?? 0) + (b.directionVerified ? 4 : 0) + bFresh + bAi + (b.dualAligned ? 1 : 0);
     return bEff - aEff;
@@ -1640,7 +1637,7 @@ export async function getDualMtfBoard({ market = 'INDIA', mode = 'INTRADAY', hol
       targetWinRatePct: avgWinRatePct != null ? Math.min(avgWinRatePct, 85) : null,
       avgWinRatePct,
     },
-    ollamaTrio: getOllamaTrioModels(),
+    aiGuard: getAiGuardModels(),
     metalsRows,
     equitySimRows,
     earlyRadar,
@@ -1669,7 +1666,7 @@ export async function getDualMtfBoard({ market = 'INDIA', mode = 'INTRADAY', hol
         : isGlobalEqDesk
           ? 'Equity Sim (US Global) rows USD domain me hain (NVDA, TSLA, AAPL, MSFT, META, AMD) — ₹ equivalent chhote text me.'
           : 'India rows NSE ₹ domain me hain + Gold/Silver (XAU/XAG) & Equity Sim tabs bhi board me integrated hain.',
-      `v21.22.0 Pure 8 Institutional Top Indicators + Ledger-Calibrated Win-Rate Confluence + 3-Seat Local Ollama Guard: Full ${rows.length}-symbol desk scan me se Top ${TOP_DEEP_TREND_LIMIT} Deep-Trend setups + Gold/Silver (XAU/XAG) + Equity Sim.`,
+      `Pure 8 Institutional Top Indicators + Ledger-Calibrated Win-Rate Confluence + 3-Seat FreeLLMAPI Guard: Full ${rows.length}-symbol desk scan me se Top ${TOP_DEEP_TREND_LIMIT} Deep-Trend setups + Gold/Silver (XAU/XAG) + Equity Sim.`,
       '75+ score = ACTION/STRONG/ELITE tier — Live Auto-Trade ON karne par 100% CoinDCX Wallet amount + leverage ke saath strictly 1 Verified Trade lagta hai aur TP1/TP2 tak Deep Monitor + Trailing SL + Reversal Profit-Booking active rehta hai.',
       'Board rows 2s 24×7 ultra-fast cache + direct live tick overlay par hain (1ms exchange guarantee nahi — price tick ~1s, board re-score ~2s; early radar isi liye trend confirm se PEHLE leading setups dikhata hai).',
       'EARLY RADAR = sirf leading/unconfirmed setups (fresh ignition ya trigger fired, PAKKA verify pending). Auto/live buttons radar rows par nahi hote — PAKKA confirm hone par wahi setup main card me promote hota hai.',

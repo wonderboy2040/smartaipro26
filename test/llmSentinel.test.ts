@@ -1,5 +1,5 @@
 // ============================================================
-// test/llmSentinel.test.ts — v18.7 AI ENGINE SENTINEL
+// test/llmSentinel.test.ts — AI ENGINE SENTINEL (FreeLLMAPI)
 // ------------------------------------------------------------
 // Pins the circuit-breaker contract behind the "AI language
 // engines offline" fix:
@@ -8,13 +8,14 @@
 //   • 429 → 90s cooldown · 401/403 → 15 min (bad key)
 //   • engineOk resets · expiry = half-open (auto-retry)
 //   • snapshot NEVER leaks key values (booleans + errors only)
-//   • ollama probe: 2.5s bound, 90s cache, force re-probe
+//   • FreeLLMAPI is the first tracked engine
 // ============================================================
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   engineSkip, engineTrack, engineOk, engineClearCooldowns,
-  engineSnapshot, engineStatusLine, ollamaProbe, ollamaCompatCfg,
-  ollamaStatus, __resetSentinelForTests, SENTINEL_PROVIDERS,
+  engineSnapshot, engineStatusLine,
+  getAiGuardModels, evaluateMtfRowWithAiGuard,
+  __resetSentinelForTests, SENTINEL_PROVIDERS,
 } from '../server/ai/llmSentinel.js';
 
 const T0 = 1_700_000_000_000; // fixed epoch for deterministic math
@@ -57,10 +58,10 @@ describe('circuit breaker core', () => {
   });
 
   it('429 rate-limit gets the dedicated 90s cooldown', () => {
-    engineTrack('groq', new Error('groq 429'), T0);
-    engineTrack('groq', new Error('groq 429'), T0);
-    expect(engineSkip('groq', T0 + 89_000)).toBe(true);
-    expect(engineSkip('groq', T0 + 91_000)).toBe(false);
+    engineTrack('freellmapi', new Error('freellmapi 429'), T0);
+    engineTrack('freellmapi', new Error('freellmapi 429'), T0);
+    expect(engineSkip('freellmapi', T0 + 89_000)).toBe(true);
+    expect(engineSkip('freellmapi', T0 + 91_000)).toBe(false);
   });
 
   it('401/403 (bad key) parks 15 minutes — the key will not heal itself', () => {
@@ -99,8 +100,8 @@ describe('circuit breaker core', () => {
     expect(engineSkip('groq', T0 + 1000)).toBe(false);
   });
 
-  it('tracks the exact provider set', () => {
-    expect(SENTINEL_PROVIDERS).toEqual(['gemini', 'groq', 'cerebras', 'openrouter', 'huggingface', 'nvidia', 'ollama']);
+  it('tracks FreeLLMAPI first, then the direct-key fallbacks', () => {
+    expect(SENTINEL_PROVIDERS).toEqual(['freellmapi', 'gemini', 'groq', 'cerebras', 'openrouter', 'huggingface', 'nvidia']);
   });
 });
 
@@ -112,6 +113,11 @@ describe('engineSnapshot — masked health view', () => {
     expect(snap.find(e => e.provider === 'groq')?.configured).toBe(true);
     expect(snap.find(e => e.provider === 'gemini')?.configured).toBe(false);
     expect(snap.find(e => e.provider === 'gemini')?.state).toBe('no-key');
+  });
+
+  it('labels FreeLLMAPI as the local router', () => {
+    const fl = engineSnapshot({}, T0).find(e => e.provider === 'freellmapi');
+    expect(fl?.label).toContain('FREELMAPI');
   });
 
   it('carries cooldownRemainSec + the masked last error', () => {
@@ -132,10 +138,11 @@ describe('engineSnapshot — masked health view', () => {
 });
 
 describe('engineStatusLine — the actionable offline reason', () => {
-  it('no keys at all → the Settings guidance line', () => {
+  it('no router → the FreeLLMAPI start guidance line', () => {
     const line = engineStatusLine({}, T0);
-    expect(line).toContain('Settings > AI Keys');
-    expect(line).toContain('Ollama');
+    expect(line).toContain('FreeLLMAPI');
+    expect(line).toContain('OFFLINE');
+    expect(line).toContain('127.0.0.1:31415');
   });
 
   it('a cooled engine shows provider + seconds + auto-retry', () => {
@@ -154,44 +161,26 @@ describe('engineStatusLine — the actionable offline reason', () => {
   });
 });
 
-describe('ollamaProbe — the keyless local engine', () => {
-  it('probes /api/tags, caches 90s, and picks the first model', async () => {
-    const calls: string[] = [];
-    vi.stubGlobal('fetch', vi.fn(async (url: any) => {
-      calls.push(String(url));
-      return { ok: true, json: async () => ({ models: [{ name: 'qwen2.5:7b' }] }) };
-    }));
-    expect(await ollamaProbe(false, T0)).toBe(true);
-    expect(await ollamaProbe(false, T0 + 1000)).toBe(true);   // cached
-    expect(calls.filter(u => u.includes('/api/tags')).length).toBe(1);
-    expect(ollamaCompatCfg().url).toContain('127.0.0.1:11434/v1/chat/completions');
-    expect(ollamaCompatCfg().defModel).toBe('qwen2.5:7b');    // configured model absent → first available
-    expect(ollamaStatus().reachable).toBe(true);
+describe('MTF AI guard — rule fallback stays honest', () => {
+  it('getAiGuardModels reports the three FreeLLMAPI virtual seats', () => {
+    const g = getAiGuardModels();
+    expect(g.engine).toBe('freellmapi');
+    expect(g.models).toEqual(['auto:fast', 'auto:smart', 'auto:balanced']);
+    expect(g.count).toBe(3);
   });
 
-  it('v21.0 preference ladder: dono installed ho to qwen2.5:7b > llama3.1:8b', async () => {
-    // v21.0: names[0] (alphabetical/list-order) pick ke bajaye ab ek
-    // PREFERENCE LADDER hai — scan seat ke liye quality order
-    // (qwen3 > qwen2.5 > llama3.1 > deepseek-r1). List order ab decide
-    // nahi karta ki 16GB laptop pe kaunsa model council chalayega.
-    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ models: [{ name: 'llama3.1:8b' }, { name: 'qwen2.5:7b' }] }) })));
-    await ollamaProbe(true, T0);
-    expect(ollamaCompatCfg().defModel).toBe('qwen2.5:7b');
-  });
-
-  it('a dead local port caches the NEGATIVE result too (no per-chat 2.5s hang)', async () => {
-    let n = 0;
-    vi.stubGlobal('fetch', vi.fn(async () => { n++; throw new Error('ECONNREFUSED'); }));
-    expect(await ollamaProbe(false, T0)).toBe(false);
-    expect(await ollamaProbe(false, T0 + 1000)).toBe(false);
-    expect(n).toBe(1);
-  });
-
-  it('force=true re-probes even inside the cache window (the RECHECK button)', async () => {
-    let n = 0;
-    vi.stubGlobal('fetch', vi.fn(async () => { n++; return { ok: true, json: async () => ({ models: [] }) }; }));
-    await ollamaProbe(false, T0);
-    await ollamaProbe(true, T0 + 1000);
-    expect(n).toBe(2);
+  it('offline router returns a rule-based verdict, never a fabricated AI lock', () => {
+    const r = evaluateMtfRowWithAiGuard({
+      symbol: 'BTCUSDT', side: 'LONG', mode: 'INTRADAY',
+      superScore: 70, worldAligned8Count: 7, aligned: true,
+      triggerFired: true, netRR_T2: 1.9,
+    });
+    expect(['rule', 'freellmapi']).toContain(r.engine);
+    if (r.engine === 'rule') {
+      expect(r.ruleBasedGuard).toBe(true);
+      expect(r.honestLabel).toContain('Rule-Based');
+    }
+    expect(r.totalModels).toBe(3);
+    expect(typeof r.verdict).toBe('string');
   });
 });

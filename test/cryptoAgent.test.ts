@@ -52,15 +52,18 @@ vi.mock('../server/ai/agent.js', () => ({
   agentStatus: (...a) => mockAgentStatus(...a),
 }));
 
-// v21.27.1: keyless local Ollama is a VALID engine in the v18.7+ chain, so
-// the "no keys → honest failure" contract only holds when no local engine is
-// reachable. Pin the probe false here — otherwise this hermetic suite's
-// result depends on whether the developer's Ollama daemon is installed/awake
-// (observed: healthy Ollama turned the no-keys case into ok:true, wedged
-// Ollama blew the 5s test budget).
-vi.mock('../server/ai/llmSentinel.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../server/ai/llmSentinel.js')>();
-  return { ...actual, ollamaProbe: vi.fn(async () => false) };
+// Hermetic: the local FreeLLMAPI router is a VALID primary engine, so the
+// "no keys → honest failure" contract only holds when the router is also
+// unreachable. Pin it down here — otherwise this suite's result depends on
+// whether the developer's FreeLLMAPI desktop app is running.
+vi.mock('../server/ai/freellmapi.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../server/ai/freellmapi.js')>();
+  return {
+    ...actual,
+    freeLlmProbe: vi.fn(async () => false),
+    freeLlmReachableCached: () => false,
+    freeLlmAgentCfg: vi.fn(async () => null),
+  };
 });
 
 import {

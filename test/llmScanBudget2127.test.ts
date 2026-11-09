@@ -1,14 +1,15 @@
-// test/llmScanBudget2127.test.ts — v21.27.1 PRO-LEVEL RECHECK LOCK
+// test/llmScanBudget2127.test.ts — FreeLLMAPI per-call budgets
 //
-// Real defect found while classifying the v69 baseline failure: the board's
-// Council scan shared the 240s DEEP Ollama budget. When the local daemon
-// accepted /api/chat but never generated, a cold board scan could park for
-// minutes (debate = up to 3 calls + legacy fallback), far beyond the UI /
-// bot polling window. Fix: scan seats get a bounded 45s budget (env
-// OLLAMA_SCAN_TIMEOUT_MS); the deep R1 seat keeps the CPU-realistic 240s.
+// The board Council scan must never inherit the long deep-analysis
+// budget. When a routed upstream accepts the request but never
+// generates, a cold board scan could otherwise park for minutes
+// (debate = up to 3 calls + legacy fallback), far beyond the UI / bot
+// polling window.
 //
-// This lock proves the caller's explicit budget actually aborts the hung
-// fetch and that the scan/deep split stays in place.
+// Contract:
+//   • scan default  → FREELLMAPI_SCAN_TIMEOUT_MS  (60s)
+//   • deep default  → FREELLMAPI_DEEP_TIMEOUT_MS  (180s)
+//   • explicit per-call timeout always wins and aborts the fetch.
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -20,34 +21,49 @@ let councilAsk: any;
 let councilAskDeep: any;
 let aiMode: any;
 let sentinel: any;
+let freeLlm: any;
 
-const tagsOk = () => Promise.resolve({
+const jsonRes = (body: any, headers: Record<string, string> = {}) => Promise.resolve({
   ok: true,
   status: 200,
-  json: async () => ({ models: [{ name: 'qwen3:8b' }, { name: 'deepseek-r1:14b' }] }),
+  headers: { get: (k: string) => headers[k.toLowerCase()] || null },
+  text: async () => JSON.stringify(body),
+  json: async () => body,
 });
+
+const probeOk = (url: string) => {
+  if (url.endsWith('/api/ping')) return jsonRes({ ok: true });
+  if (url.includes('/v1/models')) return jsonRes({ data: [{ id: 'auto:smart' }, { id: 'qwen2.5-vl-72b' }] });
+  return null;
+};
 
 beforeAll(async () => {
   sentinel = await import('../server/ai/llmSentinel.js');
   aiMode = await import('../server/ai/aiMode.js');
+  freeLlm = await import('../server/ai/freellmapi.js');
   ({ councilAsk, councilAskDeep } = await import('../server/ai/llmChain.js'));
 });
 
 beforeEach(() => {
+  vi.stubEnv('FREELLMAPI_URL', 'http://127.0.0.1:31415');
+  vi.stubEnv('FREELLMAPI_API_KEY', 'test-unified-key');
+  freeLlm.__resetFreeLlmForTests();
   sentinel.__resetSentinelForTests();
-  aiMode.setAiMode('local');
+  aiMode.setAiMode('smart');
 });
 
 afterAll(() => {
+  vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   globalThis.fetch = REAL_FETCH;
 });
 
-describe('v21.27.1 bounded Ollama scan budget', () => {
-  it('a hung /api/chat is aborted at the caller budget (never the 240s deep default)', async () => {
+describe('FreeLLMAPI bounded scan budget', () => {
+  it('a hung chat completion is aborted at the caller budget (never the deep default)', async () => {
     let aborted = false;
     vi.stubGlobal('fetch', vi.fn((url: any, init?: any) => {
-      if (String(url).includes('/api/tags')) return tagsOk();
+      const probe = probeOk(String(url));
+      if (probe) return probe;
       return new Promise((_resolve, reject) => {
         const signal = init?.signal;
         const onAbort = () => { aborted = true; reject(new Error('aborted')); };
@@ -61,34 +77,33 @@ describe('v21.27.1 bounded Ollama scan budget', () => {
     expect(out).toEqual({ json: null, model: null });
     expect(aborted).toBe(true);
     expect(elapsed).toBeLessThan(5_000);
-    globalThis.fetch = REAL_FETCH;
   });
 
-  it('default scan budget is 45s and deep budget stays 240s (source contract)', () => {
+  it('default scan budget is 60s and deep budget stays 180s (source contract)', () => {
     const src = fs.readFileSync(path.join(APP_ROOT, 'server', 'ai', 'llmChain.js'), 'utf8');
-    expect(src).toMatch(/OLLAMA_SCAN_TIMEOUT_MS\s*=\s*Number\(process\.env\.OLLAMA_SCAN_TIMEOUT_MS\)\s*\|\|\s*45_000/);
-    expect(src).toMatch(/OLLAMA_TIMEOUT_MS\s*=\s*Number\(process\.env\.OLLAMA_TIMEOUT_MS\)\s*\|\|\s*240_000/);
-    expect(src).toMatch(/if \(deep\) return OLLAMA_TIMEOUT_MS;/);
-    expect(src).toMatch(/AbortSignal\.timeout\(budgetMs\)/);
-    // councilAsk must forward an explicit per-call budget.
-    expect(src).toMatch(/_askOllamaLeg\(prompt, \{ deep, timeoutMs: opts\.timeoutMs \}\)/);
+    expect(src).toMatch(/FREELLMAPI_SCAN_TIMEOUT_MS\)\s*\|\|\s*60_000/);
+    expect(src).toMatch(/FREELLMAPI_DEEP_TIMEOUT_MS\)\s*\|\|\s*180_000/);
+    expect(src).toMatch(/return deep \? DEEP_TIMEOUT_MS : SCAN_TIMEOUT_MS;/);
+    expect(src).toMatch(/const budget = _timeoutMs\(deep, opts\.timeoutMs\);/);
+    expect(src).toMatch(/timeoutMs: budget,/);
   });
 
-  it('deep scan still resolves through the deep model path (240s lane untouched)', async () => {
+  it('deep analysis still resolves through the auto:smart seat', async () => {
     const seen: string[] = [];
     vi.stubGlobal('fetch', vi.fn((url: any, init?: any) => {
-      if (String(url).includes('/api/tags')) return tagsOk();
+      const probe = probeOk(String(url));
+      if (probe) return probe;
       const body = JSON.parse(String(init?.body || '{}'));
       seen.push(String(body.model));
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        json: async () => ({ message: { content: '{"verdicts":{}}' } }),
-      });
+      return jsonRes(
+        { choices: [{ message: { role: 'assistant', content: '{"verdicts":{}}' } }], model: 'auto:smart' },
+        { 'x-routed-via': 'kilo/glm-5.2:free' },
+      );
     }));
+    aiMode.setAiMode('fast');
     const out = await councilAskDeep('deep prompt', {});
     expect(out.json).toEqual({ verdicts: {} });
-    expect(seen[0]).toContain('deepseek-r1');
-    globalThis.fetch = REAL_FETCH;
+    expect(out.model).toBe('freellmapi:kilo/glm-5.2:free');
+    expect(seen[0]).toBe('auto:smart');
   });
 });

@@ -23,8 +23,8 @@
 //   POST /api/ai/dhan/connect            v6.5 { clientId, accessToken }
 //   POST /api/ai/dhan/disconnect         v6.5
 //   GET  /api/ai/dhan/status             v6.5 connected + scrip master + profile
-//   GET  /api/ai/mode                    v21.27 site-wide LOCAL/CLOUD mode
-//   POST /api/ai/mode                    v21.27 { mode: "local"|"cloud" }
+//   GET  /api/ai/mode                    v22.0 FreeLLMAPI intelligence profile
+//   POST /api/ai/mode                    v22.0 { mode: "smart"|"balanced"|"fast" }
 //
 // Background loops (unref'd, non-fatal):
 //   • position watcher (60s)   — crypto SL/TP + trailing
@@ -200,16 +200,14 @@ import { correlationMatrix, pairCorrelation } from './correlation.js';
 import { eventGuardStatus } from './eventGuard.js';
 // v11.0 GLOBAL MARKET COUNCIL — status/deep-verdict/near-miss routes.
 import { councilStatus, runCouncilDeep, councilStampOf } from './council.js';
-// v18.7 ENGINE SENTINEL — per-engine health view + manual recheck.
-import { engineSnapshot, engineClearCooldowns, ollamaProbe, ollamaStatus } from './llmSentinel.js';
+// ENGINE SENTINEL — router health view + manual recheck.
 import {
-  opencodeProbe, opencodeStatus, opencodeClearCooldowns,
-  probeOpenCodeSeats, OPENCODE_SEATS,
-} from './opencodeBridge.js';
+  engineSnapshot, engineClearCooldowns,
+  freeLlmProbe, freeLlmStatus, getAiGuardModels,
+} from './llmSentinel.js';
 import { councilAskVision } from './llmChain.js';
-// v21.27 site-wide LOCAL/CLOUD engine switch (restart-safe, no restart needed)
+// Site-wide FreeLLMAPI intelligence profile (restart-safe, no restart needed)
 import { getAiModeStatus, setAiMode } from './aiMode.js';
-import { unloadAllOllamaModels, warmOllamaModels, ollamaLifecycleStatus } from './ollamaLifecycle.js';
 import { coreSeatGuardStatus } from './seatCorrelation.js';
 import { nearMissList, nearMissStats } from './consensus.js';
 import { sectorDesk } from './sectors.js';
@@ -366,9 +364,6 @@ export function registerAITradingRoutes(app, deps) {
   }
   _registered = true;
   const { KEYS, OPENAI_COMPAT, TG, jsonError } = deps || {};
-  // v21.24.0 AI TRIO PHASE 1: manual bridge probe throttle (1 / 10s).
-  // The probe endpoint accepts only a seat name — never a model or prompt.
-  let _trioProbeAt = 0;
   // v6.5: AI Council keys — secrets (typed in the app) WIN over env.
   // Built fresh on every call so a key saved mid-flight engages on the
   // next board run without a restart.
@@ -544,59 +539,52 @@ export function registerAITradingRoutes(app, deps) {
     }
   });
 
-  // ---------------- v21.27: SITE-WIDE LOCAL / CLOUD SWITCH ----------------
-  // LOCAL = Ollama only · CLOUD = OpenCode free models first, Ollama
-  // fallback. Applies to the AI Council, deep analysis, global council
-  // and the borderline LLM validator. No paid provider is ever called.
-  // Server-wide + restart-safe (server/data/ai-mode.json); no restart
-  // needed — councilAsk() re-reads the mode on every ask.
-  app.get('/api/ai/mode', (_req, res) => {
+  // ---------------- SITE-WIDE FREELMAPI INTELLIGENCE PROFILE ----------------
+  // SMART (default) · BALANCED · FAST. Applies to the AI Council, deep
+  // analysis, global council and the borderline LLM validator. FreeLLMAPI
+  // owns upstream provider keys/quotas — the site never calls a paid API
+  // directly from these lanes. Server-wide + restart-safe
+  // (server/data/ai-mode.json); no restart needed because councilAsk()
+  // re-reads the profile on every ask.
+  app.get('/api/ai/mode', async (_req, res) => {
+    await freeLlmProbe().catch(() => false);
     res.set('Cache-Control', 'no-store');
-    res.json({ ok: true, ...getAiModeStatus(), ollamaLifecycle: ollamaLifecycleStatus() });
+    res.json({ ok: true, ...getAiModeStatus(), freellmapi: freeLlmStatus(), aiGuard: getAiGuardModels() });
   });
 
   app.post('/api/ai/mode', async (req, res) => {
     const out = setAiMode(req.body?.mode);
     if (!out.ok) {
-      return res.status(400).json({ ok: false, error: out.error, modes: ['local', 'cloud', 'both'] });
+      return res.status(400).json({ ok: false, error: out.error, modes: ['smart', 'balanced', 'fast'] });
     }
-    // v21.36.0 OLLAMA LIFECYCLE: cloud mode par local Ollama ke models
-    // RAM se UNLOAD ho jaate hain (service chalti rehti hai, no restart).
-    // local/both par fast-seat model warm ho jaata hai taaki first
-    // board-scan cold-load se na bhooge. Fire-and-forget, bounded.
-    let lifecycle;
-    if (out.mode === 'cloud') {
-      lifecycle = await unloadAllOllamaModels();
-    } else {
-      const env = process.env;
-      const models = [env.OLLAMA_MODEL, env.OLLAMA_VISION_MODEL].filter(Boolean);
-      lifecycle = await warmOllamaModels(models, env.OLLAMA_KEEP_ALIVE || undefined);
-    }
+    // Re-probe now so the first board scan after a switch never pays
+    // discovery latency. Never blocks the response for long (cached).
+    await freeLlmProbe(true).catch(() => false);
     res.set('Cache-Control', 'no-store');
-    res.json({ ok: true, ...getAiModeStatus(), persisted: out.persisted, ollamaLifecycle: ollamaLifecycleStatus() });
+    res.json({
+      ok: true,
+      ...getAiModeStatus(),
+      persisted: out.persisted,
+      freellmapi: freeLlmStatus(),
+      aiGuard: getAiGuardModels(),
+    });
   });
 
-  // ---------------- v18.7: AI ENGINE SENTINEL (status + recheck) ----------------
-  // The "AI language engines offline" fix: the user finally SEES every
-  // engine's real state (no-key / cooldown auto-retry / ready), why it
-  // failed (masked lastError), and gets a RECHECK button that clears
-  // cooldowns NOW (half-open) + re-probes local ollama. Key values never
-  // leave the server — only booleans and error strings.
+  // ---------------- AI ENGINE SENTINEL (status + recheck) ----------------
+  // The user finally SEES the router's real state (no-key / cooldown
+  // auto-retry / ready), why it failed (masked lastError), and gets a
+  // RECHECK button that clears cooldowns NOW (half-open) and re-probes
+  // FreeLLMAPI. Key values never leave the server.
   app.get('/api/ai/engines', async (_req, res) => {
     try {
-      await ollamaProbe().catch(() => false); // refresh the local-engine view (90s cache)
-      // v21.24.0 AI TRIO PHASE 1: OpenCode CLI is a separate keyless
-      // engine. Never block the strip on a cold CLI probe — kick one
-      // off in the background and return the cached view now.
-      const opencode = opencodeStatus();
-      if (!opencode.probed) void opencodeProbe().catch(() => null);
+      await freeLlmProbe().catch(() => false); // refresh the router view (30s cache)
       res.set('Cache-Control', 'no-store');
       res.json({
         ok: true,
         mode: getAiModeStatus(),
         engines: engineSnapshot(effectiveKeys()),
-        ollama: ollamaStatus(),
-        opencode,
+        freellmapi: freeLlmStatus(),
+        aiGuard: getAiGuardModels(),
       });
     } catch (e) {
       jsonError(res, 500, 'engine status failed', e);
@@ -605,74 +593,19 @@ export function registerAITradingRoutes(app, deps) {
 
   app.post('/api/ai/engines/recheck', async (_req, res) => {
     try {
-      engineClearCooldowns();               // half-open every engine NOW
-      opencodeClearCooldowns();             // OpenCode per-model breaker too
-      await Promise.all([
-        ollamaProbe(true).catch(() => false), // fresh local probe (bypass cache)
-        opencodeProbe(true).catch(() => null), // version/models/auth (never a model call)
-      ]);
+      engineClearCooldowns();                  // half-open every engine NOW
+      await freeLlmProbe(true).catch(() => false); // fresh router probe (bypass cache)
       res.set('Cache-Control', 'no-store');
       res.json({
         ok: true,
         cleared: true,
         mode: getAiModeStatus(),
         engines: engineSnapshot(effectiveKeys()),
-        ollama: ollamaStatus(),
-        opencode: opencodeStatus(),
+        freellmapi: freeLlmStatus(),
+        aiGuard: getAiGuardModels(),
       });
     } catch (e) {
       jsonError(res, 500, 'engine recheck failed', e);
-    }
-  });
-
-  // v21.24.0 AI TRIO PHASE 1 — manual setup probe.
-  // Runs the configured OpenCode seat chain(s) through a tiny strict-JSON
-  // prompt. Rate-limited to 1 request / 10s. The browser can choose a
-  // seat only; arbitrary models/prompts are rejected by construction.
-  app.post('/api/ai/trio/probe', async (req, res) => {
-    try {
-      const seatArg = String(req.body?.seat || 'all').toLowerCase();
-      if (seatArg !== 'all' && !OPENCODE_SEATS.includes(seatArg)) {
-        return res.status(400).json({ ok: false, error: 'seat must be fast, deep, sentinel or all' });
-      }
-      const now = Date.now();
-      const waitMs = 10_000 - (now - _trioProbeAt);
-      if (_trioProbeAt && waitMs > 0) {
-        res.set('Retry-After', String(Math.ceil(waitMs / 1000)));
-        return res.status(429).json({
-          ok: false,
-          error: 'trio probe rate-limited',
-          retryAfterSec: Math.ceil(waitMs / 1000),
-        });
-      }
-      _trioProbeAt = now;
-
-      const health = await opencodeProbe(true).catch(() => opencodeStatus());
-      if (!health?.available) {
-        res.set('Cache-Control', 'no-store');
-        return res.status(503).json({
-          ok: false,
-          phase: 1,
-          error: health?.lastError || 'opencode unavailable',
-          opencode: health || opencodeStatus(),
-          seats: {},
-        });
-      }
-
-      const seats = seatArg === 'all' ? OPENCODE_SEATS : [seatArg];
-      const results = await probeOpenCodeSeats(seats, {
-        knownModels: Array.isArray(health.models) ? health.models : [],
-      });
-      res.set('Cache-Control', 'no-store');
-      res.json({
-        ok: Object.values(results).every(r => r?.ok === true),
-        phase: 1,
-        opencode: opencodeStatus(),
-        seats: results,
-        at: Date.now(),
-      });
-    } catch (e) {
-      jsonError(res, 500, 'trio probe failed', e);
     }
   });
 
@@ -892,12 +825,12 @@ export function registerAITradingRoutes(app, deps) {
     }
   });
 
-  // ---------------- v21.0 VISION SEAT — chart-screenshot AI analysis ----------------
+  // ---------------- VISION SEAT — chart-screenshot AI analysis ----------------
   // POST /api/ai/vision-check  { symbol, side, image (dataURL), market? }
-  // Frontend chart canvas ka PNG base64 bhejta hai → local Ollama vision
-  // model (qwen2.5vl:7b / qwen3-vl) visual pattern confirmation deta hai.
-  // Vision model installed nahi → honest 503 { reason: 'no-vision-model' }.
-  // 10-min per-symbol cache (vision calls 16GB CPU pe ~20-40s lagte hain).
+  // Frontend chart canvas ka PNG base64 bhejta hai → FreeLLMAPI ke pinned
+  // multimodal models visual pattern confirmation dete hain.
+  // Router/vision model unavailable → honest 503.
+  // 10-min per-symbol cache (remote vision calls can take a few seconds).
   const _visionCache = new Map();
   // v21.34.0 [BOUNDED CACHE]: vision cache kabhi prune nahi hota tha —
   // distinct `mkt:symbol:side:tf` keys memory me forever grow karti
@@ -933,8 +866,9 @@ export function registerAITradingRoutes(app, deps) {
       if (cached && Date.now() - cached.at < 10 * 60_000) {
         return res.json({ ok: true, ...cached.out, cached: true });
       }
-      // base64 payload (data-URL prefix strip — Ollama raw base64 chahiye)
-      const b64 = image.slice(image.indexOf(',') + 1);
+      // The bridge accepts raw base64 or the full data URL; keep the full
+      // URL so the correct image MIME type survives.
+      const b64 = image;
       const prompt = [
         `Analyze this trading chart screenshot for ${symbol} (${mkt} market).`,
         `The quantitative committee's current signal is: ${side}.`,
@@ -945,21 +879,15 @@ export function registerAITradingRoutes(app, deps) {
       ].join('\n');
       const { json, model } = await councilAskVision(prompt, [b64]);
       if (!json) {
-        const st = ollamaStatus();
-        // v21.0.6 [audit E2]: ollama UNREACHABLE apna honest 503 leta hai
-        // — pehle stale visionModel field ki wajah se misleading 502
-        // ("JSON verdict nahi mila") milta tha jabki asli wajah service
-        // down thi. Model-missing 503 pehle jaisa pull-guidance ke saath.
-        const unreachable = st.reachable === false;
-        const noVision = !st.visionModel;
-        return res.status(unreachable || noVision ? 503 : 502).json({
+        const st = freeLlmStatus();
+        // Honest failure split: router down → 503; reachable but the vision
+        // ladder produced no JSON → 502. Never a fabricated verdict.
+        return res.status(st.available ? 502 : 503).json({
           ok: false,
-          error: unreachable
-            ? 'ollama service unreachable hai — Ollama chalu karke RECHECK dabao'
-            : noVision
-              ? 'koi vision model installed nahi (ollama pull qwen2.5vl:7b se install karo)'
-              : 'vision model se JSON verdict nahi mila (thodi der baad try karo)',
-          ollama: st,
+          error: st.available
+            ? 'FreeLLMAPI vision models se JSON verdict nahi mila (thodi der baad try karo)'
+            : 'FreeLLMAPI reachable nahi — desktop app start karo (default 127.0.0.1:31415) aur RECHECK dabao',
+          freellmapi: st,
         });
       }
       const out = {

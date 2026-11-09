@@ -335,7 +335,19 @@ describe('v20.8.4 E. supervisor single-instance + knobs', () => {
 });
 
 describe('v20.8.4 F. source contracts (deploy/bat/frontend/bot.mjs)', () => {
-  const read = (p) => fs.readFileSync(path.join(REPO_ROOT, p), 'utf8');
+  // Workspace layout guard: this checkout keeps the app at the repo root
+  // (…/smartaipro26) while packaging/deploy files may live one level up
+  // (…/deploy, …/.dockerignore). Prefer the checkout, fall back to the
+  // packaging parent so the contracts run in both layouts.
+  const read = (p) => {
+    const candidates = [
+      path.join(APP_ROOT, p.replace(/^app\//, '')),
+      path.join(REPO_ROOT, p),
+    ];
+    const hit = candidates.find((f) => fs.existsSync(f));
+    if (!hit) throw new Error(`missing source file: ${p}`);
+    return fs.readFileSync(hit, 'utf8');
+  };
 
   it('Dockerfile COPYs app/telegram-bot (context-root fix) and runs as non-root', () => {
     const d = read('deploy/Dockerfile');

@@ -40,7 +40,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const APP_ROOT = path.join(__dirname, '..');
-const read = (rel) => readFileSync(path.join(APP_ROOT, rel), 'utf8');
+// Normalize CRLF: multi-line source pins below match on '\n' boundaries.
+const read = (rel) => readFileSync(path.join(APP_ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
 
 // ---------------- deterministic synthetic series ----------------
 const NOW = Date.now();

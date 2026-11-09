@@ -11,33 +11,43 @@
 //     LEGACY single-shot prompt (resilience first)
 //   • AI_COUNCIL_DEBATE=off → the debate is skipped entirely
 //   • no engines → honest offline (both paths)
-// v21.27: the shared chain is LOCAL/CLOUD mode-aware; this suite pins
-// the default LOCAL path with Ollama-native fetch mocks (the old
-// Gemini-only mocks no longer exercise the production chain).
+// v22.0: the shared chain is the local FreeLLMAPI router; this suite
+// pins the debate with router-compatible fetch mocks.
 // ============================================================
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-const ollamaPayload = (obj) => ({
+const chatPayload = (obj) => ({
   ok: true,
-  json: async () => ({ message: { role: 'assistant', content: JSON.stringify(obj) } }),
+  status: 200,
+  headers: { get: (k) => (String(k).toLowerCase() === 'x-routed-via' ? 'kilo/glm-5.2:free' : null) },
+  text: async () => JSON.stringify({ choices: [{ message: { role: 'assistant', content: JSON.stringify(obj) } }] }),
+  json: async () => ({ choices: [{ message: { role: 'assistant', content: JSON.stringify(obj) } }] }),
 });
 
 // role dispatch: read the PROMPT from the request body
 let _roleResponses = {}; // { bull: obj|null, bear: obj|null, pm: obj|null, legacy: obj|null }
 let _calls = [];         // { role, prompt }
-let _ollamaUp = true;
+let _routerUp = true;
 
 beforeEach(() => {
   __resetSentinelForTests();
+  __resetFreeLlmForTests();
+  vi.stubEnv('FREELLMAPI_URL', 'http://127.0.0.1:31415');
+  vi.stubEnv('FREELLMAPI_API_KEY', 'test-unified-key');
   _roleResponses = {};
   _calls = [];
-  _ollamaUp = true;
+  _routerUp = true;
   globalThis.fetch = vi.fn(async (url, opts = {}) => {
     const u = String(url);
-    if (u.includes('/api/tags')) {
-      return _ollamaUp
-        ? { ok: true, json: async () => ({ models: [{ name: 'qwen3:8b' }] }) }
-        : { ok: false, json: async () => ({}) };
+    if (u.endsWith('/api/ping')) {
+      return _routerUp
+        ? { ok: true, status: 200, json: async () => ({ ok: true }) }
+        : { ok: false, status: 503, json: async () => ({}) };
+    }
+    if (u.includes('/v1/models')) {
+      return _routerUp
+        ? { ok: true, status: 200, json: async () => ({ data: [{ id: 'auto:smart' }] }) }
+        : { ok: false, status: 503, json: async () => ({}) };
     }
     let body = {};
     try { body = JSON.parse(opts.body || '{}'); } catch { body = {}; }
@@ -55,16 +65,18 @@ beforeEach(() => {
             : 'other';
     _calls.push({ role, prompt });
     const resp = _roleResponses[role];
-    if (resp == null) return { ok: false, json: async () => ({}) };
-    return ollamaPayload(resp);
+    if (resp == null) return { ok: false, status: 500, text: async () => '', json: async () => ({}) };
+    return chatPayload(resp);
   });
 });
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
 import { aiCouncilDebate, aiCouncilVerify, councilDebateEnabled } from '../server/ai/signals.js';
 import { __resetSentinelForTests } from '../server/ai/llmSentinel.js';
+import { __resetFreeLlmForTests } from '../server/ai/freellmapi.js';
 
 const DEPS = { KEYS: {}, OPENAI_COMPAT: {} };
 
@@ -100,7 +112,7 @@ describe('aiCouncilDebate — the 3-step chain', () => {
     const out = await aiCouncilDebate(CAND, DEPS, 'CRYPTO');
     expect(out).toBeTruthy();
     expect(out.online).toBe(true);
-    expect(out.model).toBe('ollama:qwen3:8b');
+    expect(out.model).toBe('freellmapi:kilo/glm-5.2:free');
     expect(out.verdicts.SOL.verdict).toBe('LONG');
     expect(out.verdicts.SOL.confidence).toBe(71);
     expect(out.debate.bull.SOL.case).toMatch(/momentum room/);
@@ -173,7 +185,8 @@ describe('aiCouncilVerify — debate-first with legacy fallback', () => {
 
   it('no engines → honest offline, zero calls', async () => {
     __resetSentinelForTests();
-    _ollamaUp = false;
+    __resetFreeLlmForTests();
+    _routerUp = false;
     const out = await aiCouncilVerify(CAND, { KEYS: {}, OPENAI_COMPAT: {} }, 'CRYPTO');
     expect(out).toEqual({ verdicts: {}, model: null, online: false });
     expect(_calls.length).toBe(0);
@@ -183,13 +196,13 @@ describe('aiCouncilVerify — debate-first with legacy fallback', () => {
 // ============================================================
 // v21.0.6 [audit B1/G1] — DEEP-path debate model swap contract.
 // The 🔬 deep path (getDeepSignal, opts.deep=true) ab teeno debate
-// calls councilAskDeep (OLLAMA_DEEP_MODEL, e.g. deepseek-r1:14b) pe
-// route karta hai — pehle sirf legacy single-shot deep honor karta
-// tha, isliye default debate=ON config me deep modal ka council
-// HAMESHA scan model (qwen3:8b) pe chalta tha jabki chip "↗R1·14B"
-// promise karta tha. Cloud legs ke liye deep flag no-op hai —
+// calls councilAskDeep (auto:smart profile — the smartest eligible
+// FreeLLMAPI model) pe route karta hai — pehle sirf legacy single-shot
+// deep honor karta tha, isliye default debate=ON config me deep modal
+// ka council HAMESHA scan profile pe chalta tha jabki chip "deep"
+// promise karta tha. Deep flag ab profile-model swap karta hai —
 // yahan source-contract lock kiya gaya hai (cloud path behavior
-// councilAskDeep == councilAsk, sirf local ollama leg swap hota hai).
+// councilAskDeep == councilAsk + deep:true, sirf profile model swap hota hai).
 // ============================================================
 describe('v21.0.6 — deep-path debate model swap (source contract)', () => {
   it('aiCouncilDebate routes its 3 calls via councilAskDeep when opts.deep', async () => {

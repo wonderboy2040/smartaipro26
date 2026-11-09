@@ -89,9 +89,10 @@ export let HF_KEY = env.HF_API_KEY || env.HUGGINGFACE_API_KEY || "";
 if (HF_KEY) HF_KEY = HF_KEY.replace(/['"]/g, '').trim();
 export function isHFAvailable() { return !!(HF_KEY && HF_KEY.length > 10); }
 
-// Ollama (self-hosted, truly keyless)
-export const OLLAMA_URL = env.OLLAMA_URL || 'http://localhost:11434';
-export function isOllamaAvailable() { return false; }
+// FreeLLMAPI (local router — owns the upstream provider keys)
+export const FREELLMAPI_URL = env.FREELLMAPI_URL || 'http://127.0.0.1:31415';
+export const FREELLMAPI_API_KEY = (env.FREELLMAPI_API_KEY || '').replace(/['"]/g, '').trim();
+export function isFreeLlmApiConfigured() { return !!FREELLMAPI_URL; }
 
 // ============================================
 // NVIDIA Llama 3.3 70B / Nemotron

@@ -3732,7 +3732,7 @@ export async function mtfAutoTick(p = {}) {
       && !r.trigger?.reversalRisk
       && !r.trigger?.opposingFlow
       && !r.context?.exhausted
-      && (r.ollamaTrio == null || r.ollamaTrio.approvedCount >= 2)
+      && (r.aiGuard == null || r.aiGuard.approvedCount >= 2)
       && !r.trapVeto
       && !r.zoneWallVeto
       && !r.counterTrend
@@ -3756,7 +3756,7 @@ export async function mtfAutoTick(p = {}) {
       eligible = strongVerified;
       eligible.sort((a, b) =>
         ((b.directionVerified === true ? 1 : 0) - (a.directionVerified === true ? 1 : 0))
-        || (((b.ollamaTrio?.approvedCount ?? 3) >= 3 ? 1 : 0) - ((a.ollamaTrio?.approvedCount ?? 3) >= 3 ? 1 : 0))
+        || (((b.aiGuard?.approvedCount ?? 3) >= 3 ? 1 : 0) - ((a.aiGuard?.approvedCount ?? 3) >= 3 ? 1 : 0))
         || (((b.earlyIgnition || b.trigger?.pullbackReclaim) ? 1 : 0) - ((a.earlyIgnition || a.trigger?.pullbackReclaim) ? 1 : 0))
         || ((Number(b.superScore) || 0) - (Number(a.superScore) || 0))
       );
@@ -3800,7 +3800,7 @@ export async function mtfAutoTick(p = {}) {
         && !r.trigger?.overextended
         && !r.trigger?.opposingFlow
         && !r.context?.exhausted
-        && (r.ollamaTrio == null || r.ollamaTrio.approvedCount >= 2)
+        && (r.aiGuard == null || r.aiGuard.approvedCount >= 2)
         && !r.trapVeto
         && !r.zoneWallVeto
         && !r.counterTrend

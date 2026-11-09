@@ -327,13 +327,16 @@ async function sectionC(ENV) {
     if (kx.botLab?.globalPause === true) mark('warn', 'Bot Lab global pause ON', 'bots paused hain');
   } catch (e) { mark('fail', '/api/health', String(e?.message || e)); }
 
-  // C2 engines + ollama
+  // C2 engines + FreeLLMAPI router
   try {
     const { status, json: j } = await jget('/api/ai/engines', 20000);
     if (status === 200 && j?.engines) {
       const en = Object.values(j.engines);
       const ready = en.filter(x => x?.state === 'ready' || x?.ok === true).length;
-      mark(ready > 0 ? 'pass' : 'warn', `AI language engines (${ready}/${en.length} ready)`, j.ollama?.reachable ? 'local ollama reachable' : 'ollama off (cloud engines chalenge)');
+      const router = j.freellmapi?.available
+        ? `FreeLLMAPI ready (${j.freellmapi.modelsCount || 0} models, ${j.freellmapi.baseUrl || '127.0.0.1:31415'})`
+        : `FreeLLMAPI offline — ${j.freellmapi?.lastError || 'desktop app start karo'}`;
+      mark(ready > 0 ? 'pass' : 'warn', `AI language engines (${ready}/${en.length} ready)`, router);
     } else mark('warn', '/api/ai/engines', `HTTP ${status}`);
   } catch (e) { mark('warn', '/api/ai/engines', String(e?.message || e)); }
 

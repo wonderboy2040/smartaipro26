@@ -29,7 +29,7 @@ import { resolveAgentLeverage } from '../server/ai/agent.js';
 import { proTraderWalletLeverage, proTraderReversalCheck } from '../server/ai/proTraderAuto.js';
 import { tryParseJson } from '../server/ai/llmChain.js';
 
-describe('v21.18.0 — Dual-TF Superintelligence Board + Local Ollama + Wallet 10x/5x Leverage + Fee-Aware Zero-Loss Exit', () => {
+describe('v21.18.0 — Dual-TF Superintelligence Board + FreeLLMAPI + Wallet 10x/5x Leverage + Fee-Aware Zero-Loss Exit', () => {
   beforeEach(() => {
     __resetMtfAutoForTests();
   });
@@ -50,7 +50,7 @@ describe('v21.18.0 — Dual-TF Superintelligence Board + Local Ollama + Wallet 1
     expect(inSrc).not.toContain('num="01d"');
   });
 
-  it('2) upgrades Super Score with Top AI Agents + SVA + Local Ollama Council accuracy', () => {
+  it('2) upgrades Super Score with Top AI Agents + SVA + FreeLLMAPI Council accuracy', () => {
     const planBase = {
       ok: true,
       symbol: 'BTC',
@@ -69,7 +69,7 @@ describe('v21.18.0 — Dual-TF Superintelligence Board + Local Ollama + Wallet 1
     };
 
     const withoutAgents = fuseDualTf({ plan: planBase, boardSig: { aiScore: 70, side: 'LONG' }, mtf6: null });
-    const withTopAgentsAndOllama = fuseDualTf({
+    const withTopAgentsAndAi = fuseDualTf({
       plan: planBase,
       boardSig: {
         aiScore: 84,
@@ -78,18 +78,18 @@ describe('v21.18.0 — Dual-TF Superintelligence Board + Local Ollama + Wallet 1
         agreement: 88,
         voters: 14,
         sva: { action: 'STRONG_BUY', score: 92 },
-        aiConfirm: { verdict: 'CONFIRM', provider: 'ollama', model: 'qwen3:8b', reason: 'Strong 15m+5m breakout' },
+        aiConfirm: { verdict: 'CONFIRM', provider: 'freellmapi', model: 'auto:smart', reason: 'Strong 15m+5m breakout' },
       },
       mtf6: { consensus: 'STRONG BUY', agreementPct: 84 },
     });
 
-    expect(withTopAgentsAndOllama.superScore).toBeGreaterThan(withoutAgents.superScore!);
-    expect(withTopAgentsAndOllama.tier).toBe('ELITE');
-    expect(withTopAgentsAndOllama.drivers.some((d: string) => d.includes('AI Council / Ollama') && d.includes('CONFIRM'))).toBe(true);
-    expect(withTopAgentsAndOllama.drivers.some((d: string) => d.includes('SVA 10-check STRONG_BUY'))).toBe(true);
+    expect(withTopAgentsAndAi.superScore).toBeGreaterThan(withoutAgents.superScore!);
+    expect(withTopAgentsAndAi.tier).toBe('ELITE');
+    expect(withTopAgentsAndAi.drivers.some((d: string) => d.includes('AI Council / FreeLLMAPI') && d.includes('CONFIRM'))).toBe(true);
+    expect(withTopAgentsAndAi.drivers.some((d: string) => d.includes('SVA 10-check STRONG_BUY'))).toBe(true);
   });
 
-  it('3) parses Local Ollama JSON responses with thinking blocks and trailing commas cleanly (zero error)', () => {
+  it('3) parses FreeLLMAPI JSON responses with thinking blocks and trailing commas cleanly (zero error)', () => {
     const raw = `<think>Analyzing 15m deep trend and 5m trigger...</think>\n` +
       '```json\n{"verdict": "CONFIRM", "confidenceDelta": 6, "reason": "15m HH-HL + 5m volume expansion",}\n```';
     const parsed = tryParseJson(raw) as Record<string, unknown> | null;

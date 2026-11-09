@@ -1,89 +1,40 @@
 // ============================================================
-// server/ai/llmSentinel.js — v18.7 AI ENGINE SENTINEL
+// server/ai/llmSentinel.js — v22.0 AI ENGINE SENTINEL (FreeLLMAPI)
 // ------------------------------------------------------------
-// THE "AI language engines offline" KILLER.
+// ONE local router, one health ledger. FreeLLMAPI owns every upstream
+// provider key; the site only needs to know whether the router itself
+// is answering and which model it routed the last request to.
 //
-// Every language engine (gemini / groq / cerebras / openrouter /
-// huggingface / nvidia + keyless LOCAL ollama) gets a health
-// record here: consecutive failures, last error, and a cooldown
-// (circuit breaker). What that buys:
+//   • FAST-FAIL   — 'freellmapi' in cooldown is skipped instantly, so
+//     a closed desktop app never costs a 30-120s timeout per board row.
+//   • AUTO-RECOVER — cooldown expiry = half-open: the next ask retries.
+//     POST /api/ai/engines/recheck clears cooldowns and re-probes NOW.
+//   • HONEST STATUS — engineSnapshot() powers GET /api/ai/engines with
+//     no-key / cooldown / ready / tried and the masked last error.
+//   • MTF AI GUARD — a fire-and-forget `auto:fast` seat votes on warm
+//     board rows (CONFIRM / CAUTION), cached 30s and rate-limited so a
+//     ~26-symbol scan never floods the router's free quotas.
 //
-//   • FAST-FAIL   — a provider in cooldown is SKIPPED instantly on
-//     the next chat. No more paying a 30s timeout to a dead
-//     provider on EVERY message (the reason "engines offline"
-//     felt permanent AND slow).
-//   • AUTO-RECOVER — cooldown expiry = half-open circuit: the very
-//     next chat retries the engine by itself. Transient 429s /
-//     5xx / DNS blips heal without any restart. POST
-//     /api/ai/engines/recheck clears cooldowns NOW (UI button).
-//   • HONEST STATUS — engineSnapshot() powers GET /api/ai/engines
-//     and the degraded-mode "ENGINE STATUS" line: the user finally
-//     SEES why an engine is offline (429? bad key? no key?) and
-//     what to do about it.
-//   • KEYLESS LOCAL — ollamaProbe() detects a local Ollama install
-//     (127.0.0.1:11434) with a 2.5s bound + 90s cache. When
-//     present it joins the chain as a REAL language engine with
-//     zero cloud keys — the desk chat keeps its LLM prose even
-//     with every cloud provider down.
-//
-// PURITY: no provider is CALLED here (except the local ollama
-// /api/tags liveness probe). Success/failure is REPORTED to the
-// sentinel by the agent loops via engineOk()/engineTrack(). All
-// state is in-module and resettable for tests. Never throws.
+// PURITY: this module never calls a provider directly. The only network
+// I/O is the router liveness probe (delegated to freellmapi.js) and the
+// bounded, fire-and-forget MTF guard ask.
 // ============================================================
-import os from 'node:os';
-// P2 (board AI lane mode-awareness): cloud mode serves the MTF board's AI
-// seats from OpenCode free models; the persisted site mode is read fresh on
-// every call so the LOCAL/CLOUD/BOTH switch applies without a restart.
+import {
+  freeLlmProbe,
+  freeLlmStatus,
+  freeLlmReachableCached,
+  freeLlmJson,
+  FREELLMAPI_MODELS,
+} from './freellmapi.js';
 import { getAiMode } from './aiMode.js';
-import { askOpenCode, resolveSeatModel } from './opencodeBridge.js';
 
-const OLLAMA_BASE = (process.env.OLLAMA_BASE || 'http://127.0.0.1:11434').replace(/\/+$/, '');
-// v21.0: scan-seat preference ladder — user ke 16GB setup me qwen3:8b
-// (fast + best Hindi/English + thinking mode) primary hai; absent ho
-// to available models me se best fallback chunta hai (pehle explicit
-// env, phir preference order, phir koi bhi installed model).
-const OLLAMA_MODEL_PREFS = ['qwen3:8b', 'qwen3:14b', 'qwen2.5:7b', 'llama3.1:8b', 'deepseek-r1:14b'];
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || '';
-// v20.6.1: deep-analysis model. Scan uses OLLAMA_MODEL (fast, small — qwen3:8b);
-// deep single-symbol analysis uses OLLAMA_DEEP_MODEL (slower, larger — deepseek-r1:14b).
-// On a 16GB laptop with OLLAMA_MAX_LOADED_MODELS=1, Ollama auto-evicts the scan
-// model and loads the deep model when a deep call lands, then re-loads the scan
-// model when the next scan call lands. Cost: ~30-60s model swap per transition
-// (disk read + CUDA init). The scan path NEVER triggers a swap; only the deep
-// path does. Leave OLLAMA_DEEP_MODEL unset → deep path falls back to OLLAMA_MODEL
-// (same model, no swap, but less reasoning depth).
-// v21.0: default ab 'deepseek-r1:14b' — R1-distill financial-reasoning
-// benchmarks me is size-class ka best CoT reasoner hai (FinTradeBench).
-const OLLAMA_DEEP_MODEL = process.env.OLLAMA_DEEP_MODEL || 'deepseek-r1:14b';
-// v21.0 VISION SEAT: chart-screenshot analysis ke liye (qwen2.5vl:7b /
-// qwen3-vl — Ollama me native multimodal). councilAskVision() use karta hai.
-const OLLAMA_VISION_PREFS = ['qwen2.5vl:7b', 'qwen3-vl:8b', 'llava:7b', 'gemma3:4b'];
-const OLLAMA_VISION_MODEL = process.env.OLLAMA_VISION_MODEL || '';
-
-// v21.0 16GB RAM GUARD: context-window budget auto-clamp. Node server +
-// browser + Ollama ek hi 16GB machine pe — deepseek-r1:14b @ Q4 ≈ 9GB
-// weights + KV cache. num_ctx 16k → ~3GB KV (browser khula ho to OOM
-// risk). Total system RAM < 20GB → scan/deep ctx 8192 par clamp (env
-// override OLLAMA_NUM_CTX / OLLAMA_NUM_CTX_DEEP hamesha jeet-ta hai).
-const _sysTotalGb = (() => {
-  try { return Math.round(os.totalmem() / (1024 ** 3)); } catch { return 16; }
-})();
-const RAM_GUARD_CTX = _sysTotalGb < 20 ? 8192 : 16384;
-export const OLLAMA_NUM_CTX = Number(process.env.OLLAMA_NUM_CTX) || RAM_GUARD_CTX;
-export const OLLAMA_NUM_CTX_DEEP = Number(process.env.OLLAMA_NUM_CTX_DEEP) || RAM_GUARD_CTX;
-// keep_alive: idle pe model RAM me kitni der rahe. 5m = Node/browser
-// ko breathing room (16GB me do 14B+8B model ek saath resident = OOM).
-export const OLLAMA_KEEP_ALIVE = process.env.OLLAMA_KEEP_ALIVE || '5m';
-
-/** All engines the sentinel tracks (order = chain preference). */
-export const SENTINEL_PROVIDERS = ['gemini', 'groq', 'cerebras', 'openrouter', 'huggingface', 'nvidia', 'ollama'];
+/** All engines the sentinel tracks (order = UI preference). */
+export const SENTINEL_PROVIDERS = ['freellmapi', 'gemini', 'groq', 'cerebras', 'openrouter', 'huggingface', 'nvidia'];
 
 const ERR_TRUNC = 120;
 
 const _state = {
   engines: new Map(), // name → { consecFails, lastErr, lastErrAt, cooldownUntil, lastOkAt, calls }
-  ollama: { reachable: false, checkedAt: 0, checking: null, models: [], model: OLLAMA_MODEL || 'qwen3:8b', deepModel: OLLAMA_DEEP_MODEL || null, visionModel: null },
 };
 
 function _rec(name) {
@@ -112,8 +63,8 @@ export function engineOk(provider, now = Date.now()) {
 /**
  * Report a FAILURE. Cooldown ladder (armed on the 2nd consecutive
  * failure — one transient blip never parks an engine):
- *   401/403 (bad key)      → 15 min  (the key won't heal itself)
- *   429     (rate limit)   → 90 s    (provider-quota, comes back)
+ *   401/403 (bad key)      → 15 min
+ *   429     (rate limit)   → 90 s
  *   network / 5xx / other  → 30s → 60s → 120s → 300s (cap)
  */
 export function engineTrack(provider, err, now = Date.now()) {
@@ -147,7 +98,9 @@ export function engineClearCooldowns() {
 export function engineSnapshot(KEYS = {}, now = Date.now()) {
   return SENTINEL_PROVIDERS.map((name) => {
     const r = _state.engines.get(name);
-    const configured = name === 'ollama' ? !!_state.ollama.reachable : !!(KEYS && KEYS[name]);
+    const configured = name === 'freellmapi'
+      ? freeLlmReachableCached()
+      : !!(KEYS && KEYS[name]);
     const cooling = !!(r && r.cooldownUntil > now);
     const state = !configured ? 'no-key'
       : cooling ? 'cooldown'
@@ -155,6 +108,7 @@ export function engineSnapshot(KEYS = {}, now = Date.now()) {
           : r?.lastErrAt ? 'tried' : 'idle';
     return {
       provider: name,
+      label: name === 'freellmapi' ? 'FREELMAPI·LOCAL' : name.toUpperCase(),
       configured,
       state,
       lastError: r?.lastErr || null,
@@ -166,14 +120,16 @@ export function engineSnapshot(KEYS = {}, now = Date.now()) {
 }
 
 /**
- * One compact Hinglish line for the deterministic-mode answer
- * footer — makes "engines offline" actionable instead of scary.
+ * One compact Hinglish line for the deterministic-mode answer footer —
+ * makes "engines offline" actionable instead of scary.
  */
 export function engineStatusLine(KEYS = {}, now = Date.now()) {
   const parts = [];
   for (const e of engineSnapshot(KEYS, now)) {
-    if (e.provider === 'ollama') {
-      if (e.configured) parts.push('ollama (local) READY');
+    if (e.provider === 'freellmapi') {
+      if (e.state === 'cooldown') parts.push(`FreeLLMAPI: ${e.cooldownRemainSec}s cooldown auto-retry (${e.lastError || 'fail'})`);
+      else if (e.configured) parts.push('FreeLLMAPI: ONLINE');
+      else parts.push('FreeLLMAPI: OFFLINE (desktop app start karo — default 127.0.0.1:31415)');
       continue;
     }
     if (!e.configured) continue;
@@ -182,185 +138,75 @@ export function engineStatusLine(KEYS = {}, now = Date.now()) {
     else if (e.state === 'tried') parts.push(`${e.provider}: ${e.lastError || 'no response'}`);
     else parts.push(`${e.provider}: armed`);
   }
-  if (!parts.length) {
-    return 'koi cloud engine key configured nahi — Settings > AI Keys me free Gemini ya Groq key daalo, ya Ollama install karo (localhost:11434, keyless local engine)';
-  }
-  return `${parts.join(' | ')} — RECHECK button dabao ya key save karte hi auto-engaged`;
+  return `${parts.join(' | ')} — RECHECK button dabao ya FreeLLMAPI desktop app start karo`;
 }
 
-// ---------------- local ollama engine (keyless) ----------------
+// ---------------- MTF board AI guard ----------------
+
+// Per-symbol AI verdict cache. A board scan stays <50ms because the
+// guard only ever reads this cache; the live ask refreshes in the
+// background for the next 30s window.
+const _mtfAiCache = new Map();
+const MTF_AI_TTL_MS = 30_000;
+const MTF_AI_TIMEOUT_MS = Number(process.env.FREELLMAPI_MTF_TIMEOUT_MS) || 25_000;
+
+const _warmWindow = { start: 0, count: 0 };
+const WARM_WINDOW_MS = 30_000;
+function _warmPerWindow() {
+  return Math.max(1, Number(process.env.FREELLMAPI_MTF_WARM_PER_WINDOW) || 6);
+}
+
+/** The three FreeLLMAPI guard seats (same three roles as before). */
+export function getAiGuardModels() {
+  const st = freeLlmStatus();
+  return {
+    engine: 'freellmapi',
+    reachable: !!st.available,
+    base: st.baseUrl || null,
+    fastModel: FREELLMAPI_MODELS.fast,
+    deepModel: FREELLMAPI_MODELS.smart,
+    sentinelModel: FREELLMAPI_MODELS.balanced,
+    models: [FREELLMAPI_MODELS.fast, FREELLMAPI_MODELS.smart, FREELLMAPI_MODELS.balanced],
+    count: 3,
+    profile: getAiMode(),
+  };
+}
+
+function _parseGuard(out) {
+  const json = out?.json;
+  if (json && typeof json === 'object') {
+    const action = String(json.action || json.verdict || '').toUpperCase();
+    const verdict = action === 'CONFIRM' ? 'CONFIRM'
+      : action === 'REJECT' || action === 'WAIT' || action === 'CAUTION' ? 'CAUTION'
+        : null;
+    const note = String(json.note || json.reason || '').slice(0, 90);
+    return { verdict, note };
+  }
+  const text = String(out?.text || '').trim();
+  if (!text) return { verdict: null, note: '' };
+  const verdict = /\b(CAUTION|VETO|REVERSE|AVOID|TRAP|WAIT|SKIP|DISAGREE|REJECT)\b/i.test(text)
+    ? 'CAUTION'
+    : /\b(CONFIRM|AGREE|LOCK)\b/i.test(text)
+      ? 'CONFIRM'
+      : null;
+  return { verdict, note: text.slice(0, 90) };
+}
 
 /**
- * Liveness probe for a local Ollama install. 2.5s bound, 90s
- * positive AND negative cache, single-flight. Caches the first
- * available model name when present.
+ * Non-circular 3-seat rule guard + optional live FreeLLMAPI verdict.
+ * Seats:
+ *   1. Fast Guard   (auto:fast)     — trigger & micro-momentum
+ *   2. Deep Guard   (auto:smart)    — 8-indicator structure & net R:R
+ *   3. Sentinel Guard (auto:balanced) — conflicts, traps & live caution
+ * Never blocks: the live ask is fire-and-forget into the 30s cache.
  */
-export async function ollamaProbe(force = false, now = Date.now()) {
-  if (!force && _state.ollama.checkedAt && now - _state.ollama.checkedAt < 90_000) {
-    return _state.ollama.reachable;
-  }
-  if (_state.ollama.checking) return _state.ollama.checking;
-  _state.ollama.checking = (async () => {
-    try {
-      const r = await fetch(`${OLLAMA_BASE}/api/tags`, { signal: AbortSignal.timeout(2500) });
-      if (r.ok) {
-        const j = await r.json().catch(() => ({}));
-        const names = (j?.models || []).map(m => String(m?.name || '')).filter(Boolean);
-        _state.ollama.models = names;
-        // v21.0 PREFERENCE LADDER: explicit env → preferred installed →
-        // any installed. (Pehle names[0] tha — arbitrary alfabetical pick,
-        // deepseek-r1:14b scan seat ban sakta tha 16GB pe.)
-        // v21.18.0 ZERO-ERROR LOCAL OLLAMA RESOLVER:
-        // Exact tag match → family prefix match (e.g. qwen3:latest, deepseek-r1:8b,
-        // llama3.1:latest) → first non-embedding installed model.
-        const chatNames = names.filter(n => !/embed|nomic|bge|mxbai/i.test(n));
-        const pool = chatNames.length ? chatNames : names;
-        const matchTagOrFamily = (want) => {
-          if (!want) return null;
-          if (names.includes(want)) return want;
-          const fam = String(want).split(':')[0].toLowerCase();
-          return pool.find(n => String(n).toLowerCase() === fam || String(n).toLowerCase().startsWith(fam + ':')) || null;
-        };
-        const pick = (prefs, envVal) => {
-          if (envVal) {
-            const m = matchTagOrFamily(envVal);
-            if (m) return m;
-            if (!names.length) return envVal; // explicit env when tags list is empty
-          }
-          for (const p of prefs) {
-            if (names.includes(p)) return p;
-          }
-          for (const p of prefs) {
-            const famMatch = matchTagOrFamily(p);
-            if (famMatch) return famMatch;
-          }
-          return pool[0] || names[0] || null;
-        };
-        _state.ollama.model = pick(OLLAMA_MODEL_PREFS, OLLAMA_MODEL) || (OLLAMA_MODEL || 'qwen3:8b');
-        const deepMatch = matchTagOrFamily(OLLAMA_DEEP_MODEL) || matchTagOrFamily('deepseek-r1:14b');
-        _state.ollama.deepModel = deepMatch || _state.ollama.model || OLLAMA_DEEP_MODEL;
-        _state.ollama.visionModel = pick(OLLAMA_VISION_PREFS, OLLAMA_VISION_MODEL);
-        _state.ollama.reachable = true;
-      } else {
-        _state.ollama.reachable = false;
-      }
-    } catch {
-      _state.ollama.reachable = false;
-    }
-    _state.ollama.checkedAt = Date.now();
-    _state.ollama.checking = null;
-    return _state.ollama.reachable;
-  })();
-  return _state.ollama.checking;
-}
-
-/** OpenAI-compat cfg for the local ollama engine (chain runner arg).
- *  v20.6.1: opts.deep = true → returns the deep-analysis model (if
- *  OLLAMA_DEEP_MODEL is set, falls back to OLLAMA_MODEL otherwise).
- *  The scan path always passes opts.deep=false (or nothing) → uses
- *  OLLAMA_MODEL. The deep path (getDeepSignal → aiCouncilVerify →
- *  councilAskDeep) passes opts.deep=true → uses OLLAMA_DEEP_MODEL.
- *  On a 16GB laptop with OLLAMA_MAX_LOADED_MODELS=1, Ollama auto-
- *  evicts + re-loads on the model swap (cost ~30-60s per transition).
- *  v21.0: deepModel ab probe se RESOLVED hota hai (installed check
- *  ke saath) — ollamaStatus() me bhi surface hota hai.
- */
-export function ollamaCompatCfg(opts = {}) {
-  const defModel = _state.ollama.model || OLLAMA_MODEL || 'qwen3:8b';
-  const deepModel = _state.ollama.deepModel || OLLAMA_DEEP_MODEL || defModel;  // graceful fallback
-  return {
-    url: `${OLLAMA_BASE}/v1/chat/completions`,
-    defModel: opts.deep ? deepModel : defModel,
-    deepModel,  // surfaced for /api/ai/engines + tests
-  };
-}
-
-/** v21.0: the vision model name (or null jab vision model installed
- *  nahi hai). councilAskVision() isko use karta hai. */
-export function ollamaVisionModel() {
-  return _state.ollama.visionModel || (OLLAMA_VISION_MODEL || null);
-}
-
-/** View for /api/ai/engines. */
-export function ollamaStatus() {
-  const installed = (_state.ollama.models || []).filter(Boolean);
-  // Role order, NOT `ollama list` installation order. The old installed.slice(0,3)
-  // could label qwen2.5vl:7b as the DEEP seat and deepseek-r1:14b as the
-  // VISION/sentinel seat — the UI chip and trio attribution then lied.
-  const resolvedModel = _state.ollama.model || OLLAMA_MODEL || 'qwen3:8b';
-  const resolvedDeep = _state.ollama.deepModel || OLLAMA_DEEP_MODEL || 'deepseek-r1:14b';
-  const resolvedVision = _state.ollama.visionModel || OLLAMA_VISION_MODEL || 'qwen2.5vl:7b';
-  const trioModels = [resolvedModel, resolvedDeep, resolvedVision].filter(Boolean);
-  return {
-    base: OLLAMA_BASE,
-    reachable: !!_state.ollama.reachable,
-    model: resolvedModel,
-    deepModel: resolvedDeep,
-    visionModel: resolvedVision,
-    models: (_state.ollama.models || []).slice(0, 8),
-    trioModels,
-    downloadedModelCount: Math.max(3, installed.length),
-    turboOptimized: true,
-    numCtx: OLLAMA_NUM_CTX,
-    numCtxDeep: OLLAMA_NUM_CTX_DEEP,
-    keepAlive: OLLAMA_KEEP_ALIVE,
-    ramGuard: { sysTotalGb: _sysTotalGb, ctxClamped: _sysTotalGb < 20 },
-    checkedAgeSec: _state.ollama.checkedAt ? Math.max(0, Math.round((Date.now() - _state.ollama.checkedAt) / 1000)) : null,
-  };
-}
-
-// v21.22.0: Ultra-Fast 3-Model Local Ollama MTF Dual-Board Optimizer
-// Caches per-symbol AI verdicts for 30s and refreshes asynchronously when
-// local Ollama (127.0.0.1:11434) is online so MTF Dual-Board scans stay <50ms!
-const _mtfOllamaCache = new Map();
-const MTF_OLLAMA_TTL_MS = 30_000;
-// v21.25: the old 1.5s abort was impossible for qwen3:8b (even a warm call
-// needs a few seconds; a cold model load needs ~10-20s). This call is
-// fire-and-forget, so a realistic 30s budget costs the board zero latency
-// and finally lets the "Live Ollama" verdict reach the cache.
-const MTF_OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_MTF_TIMEOUT_MS) || 30_000;
-
-// P2 CLOUD AI LANE (cloud/both mode): fire-and-forget OpenCode warm for the
-// MTF board's fast seat. Gated to a small per-window count so the free tier's
-// 12/min cap is never blown by a ~26-symbol board scan.
-const _cloudWarmWindow = { start: 0, count: 0 };
-const CLOUD_WARM_WINDOW_MS = 30_000;
-function _cloudWarmPerWindow() {
-  return Math.max(1, Number(process.env.MTF_CLOUD_WARM_PER_WINDOW) || 4);
-}
-
-export function getOllamaTrioModels() {
-  const st = ollamaStatus();
-  const [fastModel, deepModel, sentinelModel] = st.trioModels;
-  return {
-    reachable: st.reachable,
-    base: st.base,
-    fastModel: fastModel || 'qwen3:8b',
-    deepModel: deepModel || 'deepseek-r1:14b',
-    sentinelModel: sentinelModel || 'qwen2.5vl:7b',
-    models: st.trioModels,
-    count: 3,
-    keepAlive: '30m',
-  };
-}
-
-export function evaluateMtfRowWithOllamaTrio(rowCtx = {}) {
-  const trio = getOllamaTrioModels();
-  // P2: the site AI mode decides whether local Ollama participates. In CLOUD
-  // mode the local daemon is intentionally NOT queried (it is unloaded when
-  // the mode is cloud) — those seats are served by the OpenCode bridge
-  // instead (see warmBoardAiLane). LOCAL/BOTH keep the Ollama path.
-  let aiMode = 'local';
-  try { aiMode = getAiMode(); } catch { /* fall back to local */ }
-  const useOllama = aiMode !== 'cloud';
-  const trioLive = useOllama ? trio.reachable : false;
+export function evaluateMtfRowWithAiGuard(rowCtx = {}) {
+  const trio = getAiGuardModels();
+  const trioLive = trio.reachable;
   const sym = String(rowCtx.symbol || '').toUpperCase();
   const side = rowCtx.side || 'NONE';
   const superScore = Number(rowCtx.superScore) || 0;
-  // v21.23.2 HONESTY: `|| 6` default GUESSED 6/8 aligned tha (unmeasured/0
-  // count bhi 6 ban jaata tha → trio ko vote-mil jaate the). Ab count
-  // pass NAHI hua ya 0 measured hai → conservative 0 (count-based vote
-  // grants band; sirf live-LLM confirm vaali seat chalegi).
+  // Unmeasured counts must stay conservative — never fabricate 6/8.
   const worldAligned8Raw = Number(rowCtx.worldAligned8Count ?? rowCtx.worldAlignedCount);
   const worldAligned8 = Math.min(8, Number.isFinite(worldAligned8Raw) ? worldAligned8Raw : 0);
   const aligned = !!rowCtx.aligned;
@@ -369,15 +215,10 @@ export function evaluateMtfRowWithOllamaTrio(rowCtx = {}) {
   const hasReversalOrTrap = Boolean(rowCtx.reversalRisk || rowCtx.opposingFlow || rowCtx.trapVeto || rowCtx.zoneWallVeto);
   const hasCrossConflict = Boolean(rowCtx.boardSideConflict || rowCtx.svaConflict || rowCtx.councilConflict);
   const key = `${sym}:${side}:${rowCtx.mode || 'INTRADAY'}`;
-  const cached = _mtfOllamaCache.get(key);
+  const cached = _mtfAiCache.get(key);
   const liveCaution = Boolean(cached?.liveNote && /\b(CAUTION|VETO|REVERSE|AVOID|TRAP|WAIT|SKIP|DISAGREE)\b/i.test(cached.liveNote));
   const liveConfirm = Boolean(cached?.liveNote && !liveCaution && /\b(CONFIRM|AGREE|LOCK|LONG|SHORT)\b/i.test(cached.liveNote));
 
-  // Non-circular 3-seat verification (P1-2):
-  // Seat 1 (Fast Guard — qwen3:8b): Action-TF Trigger & Micro-Momentum Guard
-  // Seat 2 (Deep Guard — deepseek-r1:14b): 8-Indicator Institutional Structure & Net R:R Guard
-  // Seat 3 (Sentinel Guard — qwen2.5vl:7b): Cross-Engine Direction Conflict, Trap & Live-LLM Caution Guard
-  // (No circular dependency on estimatedWinRatePct.)
   const fastVote = (hasReversalOrTrap || hasCrossConflict)
     ? 0
     : (triggerFired && superScore >= 68) ? 1 : (superScore >= 58 ? 0.5 : 0);
@@ -392,88 +233,49 @@ export function evaluateMtfRowWithOllamaTrio(rowCtx = {}) {
   const voteSum = Number((fastVote + deepVote + sentinelVote).toFixed(2));
   const approvedCount = (fastVote >= 0.6 ? 1 : 0) + (deepVote >= 0.6 ? 1 : 0) + (sentinelVote >= 0.6 ? 1 : 0);
 
-  // P2: in cloud mode the local Ollama path is skipped (useOllama=false) so
-  // the seats are served by the OpenCode bridge instead. In local/both mode
-  // we fire a non-blocking warm inference only when the daemon is reachable.
-  if (useOllama && trioLive && sym && (side === 'LONG' || side === 'SHORT') && (!cached || (Date.now() - cached.at > MTF_OLLAMA_TTL_MS))) {
-    _mtfOllamaCache.set(key, {
-      at: Date.now(),
-      liveNote: cached?.liveNote || null,
-      liveVerdict: cached?.liveVerdict || null,
-      latencyMs: cached?.latencyMs ?? null,
-      engine: 'ollama',
+  // Refresh the live guard seat in the background (bounded per window).
+  if (trioLive && sym && (side === 'LONG' || side === 'SHORT') && (!cached || Date.now() - cached.at > MTF_AI_TTL_MS)) {
+    if (!cached) {
+      _mtfAiCache.set(key, {
+        at: Date.now(),
+        liveNote: null,
+        liveVerdict: null,
+        latencyMs: null,
+        engine: 'rule',
+      });
+    }
+    _warmGuardSeat(key, {
+      sym, side, superScore, worldAligned8, netRR,
+      hasReversalOrTrap, hasCrossConflict,
     });
-    const t0 = Date.now();
-    fetch(`${OLLAMA_BASE}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: trio.fastModel,
-        prompt: `MTF ${sym} ${side} score=${superScore} inst8=${worldAligned8}/8 RR=${netRR} revRisk=${hasReversalOrTrap} conflict=${hasCrossConflict}. Reply in 8 words max: CONFIRM or CAUTION + reason.`,
-        stream: false,
-        think: false,
-        keep_alive: '30m',
-        options: { temperature: 0.1, num_predict: 24, num_ctx: 1024 },
-      }),
-      signal: AbortSignal.timeout(MTF_OLLAMA_TIMEOUT_MS),
-    }).then(r => r.ok ? r.json() : null).then(j => {
-      const text = String(j?.response || j?.message?.content || j?.thinking || '').trim().slice(0, 90);
-      if (text) {
-        const parsedVerdict = /\b(CAUTION|VETO|REVERSE|AVOID|TRAP|WAIT|SKIP|DISAGREE)\b/i.test(text)
-          ? 'CAUTION'
-          : /\b(CONFIRM|AGREE|LOCK)\b/i.test(text)
-            ? 'CONFIRM'
-            : 'NEUTRAL';
-        _mtfOllamaCache.set(key, {
-          at: Date.now(),
-          liveNote: text,
-          liveVerdict: parsedVerdict,
-          latencyMs: Date.now() - t0,
-          engine: 'ollama',
-        });
-      }
-    }).catch(() => {});
   }
 
-  // P2: in CLOUD mode, fire-and-forget the OpenCode fast-seat warm for this
-  // row so the next 30s window shows the live cloud verdict. Gated per window
-  // so the free tier's per-minute cap is respected.
-  if (aiMode === 'cloud' && sym && (side === 'LONG' || side === 'SHORT') && !cached?.liveNote && superScore >= 60) {
-    _warmCloudSeat(key, { sym, side, superScore, worldAligned8, netRR, hasReversalOrTrap, hasCrossConflict });
-  }
-
-  const engine = cached?.engine || (aiMode === 'cloud' ? 'opencode' : 'ollama');
-  // P2: `verdict` stays the stable v21.22.0 enum ("3/3 OLLAMA AI LOCK" …) that
-  // downstream tests + the auto-link tiering key off. Engine awareness lives in
-  // the new `engine` field + `honestLabel`/`liveNote`, NOT in `verdict`.
+  const engine = cached?.engine === 'freellmapi' && cached?.liveNote ? 'freellmapi' : 'rule';
   const verdict = approvedCount === 3
-    ? '3/3 OLLAMA AI LOCK'
+    ? '3/3 FREELMAPI AI LOCK'
     : approvedCount === 2
-      ? '2/3 OLLAMA AI STRONG'
-      : '1/3 OLLAMA WATCH';
+      ? '2/3 FREELMAPI AI STRONG'
+      : '1/3 FREELMAPI WATCH';
   const scoreBoost = approvedCount === 3 ? 4 : approvedCount === 2 ? 2 : 0;
-  const hasLiveResponse = Boolean(cached?.liveNote);
+  const hasLiveResponse = Boolean(cached?.liveNote && engine === 'freellmapi');
   const ruleBasedGuard = !hasLiveResponse;
-  const engineLabel = engine === 'opencode' ? 'OpenCode' : 'Ollama';
-  const modelLabel = engine === 'opencode' ? (resolveSeatModel('fast') || 'opencode-fast') : trio.fastModel;
-  // local mode keeps the EXACT original label ("Live Ollama (qwen3:8b): …");
-  // cloud mode swaps only the engine + model to the OpenCode fast seat.
+  const modelLabel = FREELLMAPI_MODELS.fast;
   const honestLabel = hasLiveResponse
-    ? `Live ${engineLabel} (${modelLabel}): ${cached?.liveVerdict || verdict}`
+    ? `Live FreeLLMAPI (${modelLabel}): ${cached?.liveVerdict || verdict}`
     : `Rule-Based Guard ${approvedCount}/3`;
 
   return {
     optimized: true,
-    reachable: useOllama ? trio.reachable : (engine === 'opencode' ? true : trio.reachable),
-    aiMode,
+    reachable: trioLive,
+    profile: trio.profile,
     engine,
     ruleBasedGuard,
     honestLabel,
     liveVerdict: cached?.liveVerdict ?? null,
     models: trio.models,
-    fastModel: engine === 'opencode' ? (resolveSeatModel('fast') || 'opencode-fast') : trio.fastModel,
-    deepModel: engine === 'opencode' ? (resolveSeatModel('deep') || 'opencode-deep') : trio.deepModel,
-    sentinelModel: engine === 'opencode' ? (resolveSeatModel('sentinel') || 'opencode-sentinel') : trio.sentinelModel,
+    fastModel: trio.fastModel,
+    deepModel: trio.deepModel,
+    sentinelModel: trio.sentinelModel,
     approvedCount,
     totalModels: 3,
     voteScore: Math.round((voteSum / 3) * 100),
@@ -484,47 +286,47 @@ export function evaluateMtfRowWithOllamaTrio(rowCtx = {}) {
   };
 }
 
-// P2 CLOUD AI LANE — fire-and-forget OpenCode fast-seat warm for one MTF
-// board row. Writes the verdict into the same per-row cache the local
-// Ollama path uses, so the next evaluateMtfRowWithOllamaTrio() call within
-// the 30s window shows the live cloud verdict. Gated to `_cloudWarmPerWindow`
-// calls per 30s window so a ~26-symbol scan never blows the free tier's
-// per-minute cap. Never blocks the row; failures are swallowed.
-function _warmCloudSeat(key, ctx) {
+function _warmGuardSeat(key, ctx) {
   const now = Date.now();
-  if (now - _cloudWarmWindow.start >= CLOUD_WARM_WINDOW_MS) {
-    _cloudWarmWindow.start = now;
-    _cloudWarmWindow.count = 0;
+  if (now - _warmWindow.start >= WARM_WINDOW_MS) {
+    _warmWindow.start = now;
+    _warmWindow.count = 0;
   }
-  if (_cloudWarmWindow.count >= _cloudWarmPerWindow()) return;
-  _cloudWarmWindow.count++;
-  const fastModel = resolveSeatModel('fast');
-  if (!fastModel) return;
+  if (_warmWindow.count >= _warmPerWindow()) return;
+  _warmWindow.count++;
   const prompt = [
-    `You are the MOMENTUM GUARD for a trading desk.`,
+    'You are the MOMENTUM GUARD for a trading desk.',
     `Verify this MTF ${ctx.sym} ${ctx.side} setup (score=${ctx.superScore} inst8=${ctx.worldAligned8}/8 RR=${ctx.netRR} revRisk=${ctx.hasReversalOrTrap} conflict=${ctx.hasCrossConflict}).`,
-    `Return STRICT JSON only: {"action":"CONFIRM|WAIT|REJECT","confidence":0-100,"note":"<=8 words"}`,
+    'Return STRICT JSON only: {"action":"CONFIRM|WAIT|REJECT","confidence":0-100,"note":"<=8 words"}',
   ].join(' ');
-  askOpenCode(prompt, { model: fastModel, timeoutMs: Number(process.env.OPENCODE_MTF_TIMEOUT_MS) || 25_000 })
+  freeLlmJson(prompt, {
+    model: FREELLMAPI_MODELS.fast,
+    temperature: 0.1,
+    maxTokens: 80,
+    timeoutMs: MTF_AI_TIMEOUT_MS,
+  })
     .then(out => {
-      const verdict = String(out.json?.action || '').toUpperCase() === 'CONFIRM' ? 'CONFIRM' : 'CAUTION';
-      const note = String(out.json?.note || out.text || '').slice(0, 90);
-      _mtfOllamaCache.set(key, {
+      const { verdict, note } = _parseGuard(out);
+      if (!verdict) return;
+      _mtfAiCache.set(key, {
         at: Date.now(),
-        liveNote: note || (verdict === 'CONFIRM' ? 'cloud CONFIRM' : 'cloud CAUTION'),
+        liveNote: note || (verdict === 'CONFIRM' ? 'FreeLLMAPI CONFIRM' : 'FreeLLMAPI CAUTION'),
         liveVerdict: verdict,
         latencyMs: out.latencyMs,
-        engine: 'opencode',
+        engine: 'freellmapi',
       });
     })
-    .catch(() => { /* cloud warm is fire-and-forget; the rule-based guard still stands */ });
+    .catch(() => {
+      // Fire-and-forget: the rule-based guard already answered the board.
+    });
 }
 
 // ---------------- test hooks ----------------
 export function __resetSentinelForTests() {
   _state.engines.clear();
-  _state.ollama = { reachable: false, checkedAt: 0, checking: null, models: [], model: OLLAMA_MODEL || 'qwen3:8b', deepModel: OLLAMA_DEEP_MODEL || null, visionModel: null };
-  _mtfOllamaCache.clear();
-  _cloudWarmWindow.start = 0;
-  _cloudWarmWindow.count = 0;
+  _mtfAiCache.clear();
+  _warmWindow.start = 0;
+  _warmWindow.count = 0;
 }
+
+export { freeLlmProbe, freeLlmStatus };

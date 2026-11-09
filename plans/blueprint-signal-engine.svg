@@ -33,7 +33,7 @@
 
   <rect class="bg" width="1560" height="1080"/>
   <text x="28" y="34" class="ttl">Crypto Signal Engine — Internal Wiring Detail</text>
-  <text x="28" y="54" class="sub">One tick of mtfAutoLink: board → candidates → Ollama direction-check → 3 hard gates → commit (paper|live) → SL-trail → P&amp;L ·  config knobs on the right</text>
+  <text x="28" y="54" class="sub">One tick of mtfAutoLink: board → candidates → AI direction-check → 3 hard gates → commit (paper|live) → SL-trail → P&amp;L ·  config knobs on the right</text>
 
   <!-- STAGE 1: data -->
   <rect class="box" x="30" y="90" width="250" height="150"/>
@@ -77,11 +77,11 @@
   <text x="914" y="200" class="ts">tradeAll ⇒ strip availability blockers</text>
   <text x="914" y="214" class="ts">(keep quality blockers only)</text>
 
-  <!-- STAGE 5: Ollama direction verify -->
+  <!-- STAGE 5: AI direction verify -->
   <rect class="boxExt" x="320" y="290" width="290" height="120"/>
-  <text x="334" y="310" class="th">⑤ Direction Verify — Ollama TRIO</text>
-  <text x="334" y="328" class="ts">llmSentinel.js → :11434</text>
-  <text x="334" y="344" class="ts">evaluateMtfRowWithOllamaTrio</text>
+  <text x="334" y="310" class="th">⑤ Direction Verify — FreeLLMAPI AI GUARD</text>
+  <text x="334" y="328" class="ts">llmSentinel.js :31415</text>
+  <text x="334" y="344" class="ts">evaluateMtfRowWithAiGuard</text>
   <text x="334" y="360" class="ts">seat1 fast 3:8b · seat2 deep 3:8b</text>
   <text x="334" y="374" class="ts">seat3 vision 2.5vl:7b</text>
   <text x="334" y="392" class="ts">approvedCount ≥ 2 → directionVerified</text>
@@ -147,8 +147,8 @@
   <text x="1024" y="600" class="ts">executionMode: LIVE · enabled: TRUE</text>
   <text x="1024" y="616" class="ts">consecutiveLossPauseMin: 0</text>
   <text x="1024" y="634" class="tag" fill="#8fb8e0">POST /api/ai/mtf-auto/config writes it</text>
-  <text x="1024" y="664" class="ts">Ollama: OLLAMA_DEEP_MODEL=3:8b</text>
-  <text x="1024" y="678" class="ts">OLLAMA_MTF_TIMEOUT_MS=60000</text>
+  <text x="1024" y="664" class="ts">FreeLLMAPI: FREELLMAPI_PROFILE=smart</text>
+  <text x="1024" y="678" class="ts">FREELLMAPI_SCAN_TIMEOUT_MS=60000</text>
   <text x="1024" y="692" class="ts">MAX_LOADED_MODELS=2 · NUM_CTX=4096</text>
   <text x="1024" y="706" class="ts">KEEP_ALIVE=30m  (RAM-resident trio)</text>
 
@@ -156,7 +156,7 @@
   <line class="w" x1="280" y1="165" x2="320" y2="165" marker-end="url(#arw)"/>
   <line class="w" x1="570" y1="165" x2="610" y2="165" marker-end="url(#arw)"/>
   <line class="w" x1="860" y1="165" x2="900" y2="165" marker-end="url(#arw)"/>
-  <!-- candidates down into Ollama then gates then commit -->
+  <!-- candidates down into FreeLLMAPI then gates then commit -->
   <line class="w" x1="914" y1="240" x2="610" y2="290" marker-end="url(#arw)"/>
   <line class="w" x1="465" y1="410" x2="660" y2="370" marker-end="url(#arw)"/>
   <line class="w" x1="960" y1="350" x2="1010" y2="350" marker-end="url(#arw)"/>
@@ -173,7 +173,7 @@
   <line class="we" x1="1010" y1="490" x2="760" y2="330" marker-end="url(#arw)"/>
   <text x="770" y="430" class="wl">ENFORCE gates</text>
   <line class="we" x1="1150" y1="440" x2="610" y2="300" marker-end="url(#arw)"/>
-  <text x="900" y="470" class="wl">Ollama model/time/ctx</text>
+  <text x="900" y="470" class="wl">FreeLLMAPI model/timeouts</text>
 
   <!-- ===== LOWER: per-trade state machine ===== -->
   <text x="30" y="740" class="th" style="font-size:15px;">Position State Machine (one open trade, live CoinDCX futures)</text>
@@ -220,7 +220,7 @@
   <text x="574" y="998" class="t">circuitGuard / killSwitch → risk layer (halts ⑥⑦)</text>
   <text x="574" y="1014" class="t">healthMonitor 60s → feed staleness + 3-layer KILL</text>
   <text x="574" y="1030" class="t">directionLiveCert (version-pinned) = engine sanity proof</text>
-  <text x="574" y="1046" class="t">.env → Ollama model + timeouts + CoinDCX keys + APP_PIN</text>
+  <text x="574" y="1046" class="t">.env - FreeLLMAPI URL + timeouts + CoinDCX keys + APP_PIN</text>
 
   <rect class="boxExt" x="1060" y="978" width="400" height="84"/>
   <text x="1074" y="998" class="t">coindcxOrders.js → CoinDCX API (real orders)</text>

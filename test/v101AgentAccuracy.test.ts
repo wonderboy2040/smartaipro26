@@ -10,6 +10,12 @@
 // ============================================================
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
+// These suites drive the full agent tick; a shared full-suite worker can be
+// slow enough (disk/AV/GC pressure) that the 15s global budget is tight even
+// though every data leg is mocked. 30s keeps the gate deterministic without
+// hiding a real hang.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+
 const mockPrivate = vi.fn();
 // v10.17 CALENDAR DETERMINISM: eventGuard consults REAL event dates
 // (FOMC / RBI / CPI windows). On those days the x0.5 sizing haircut or
@@ -21,6 +27,12 @@ vi.mock('../server/ai/eventGuard.js', () => ({
   eventGuardCheck: () => ({ action: 'allow' }),
 }));
 
+// Calendar/market-independent sizing: the real cross-desk risk brain fetches
+// live VIX/BTC and can halve budgets or veto entries on a risk-off day.
+vi.mock('../server/ai/globalRisk.js', () => ({
+  globalRiskGate: async () => ({ veto: false, reason: null, sizeMul: 1, riskOff: false, heatPct: 0, heatCapPct: 6 }),
+}));
+
 vi.mock('../server/mcp/coindcx.js', () => ({
   coindcxPrivate: (...args) => mockPrivate(...args),
   coindcxConnected: () => true,
@@ -29,6 +41,20 @@ vi.mock('../server/mcp/coindcx.js', () => ({
 vi.mock('../server/cryptoStream.js', () => ({
   fetchCoinDcxTickers: vi.fn(async () => []),
 }));
+
+// HERMETIC PRICE FALLBACKS: getPositionsWithPnl() falls back to the real
+// TradingView/Yahoo batch fetchers when the CoinDCX ticker map misses a
+// held pair. Under a slow network that fallback alone can burn the test
+// budget — the exit/P&L contract under test only needs the degraded path.
+vi.mock('../server/ai/data.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    fetchTVCryptoBatch: vi.fn(async () => ({})),
+    fetchTVIndiaBatch: vi.fn(async () => ({})),
+    fetchYahooQuotes: vi.fn(async () => ({})),
+  };
+});
 
 const mockWalletSnapshot = vi.fn();
 const mockExecuteFutures = vi.fn();

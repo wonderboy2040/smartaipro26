@@ -36,8 +36,11 @@ server/data/
 data/
 server-data/
 config/
-models/
-ml-service/models/
+/models/
+# ml-service model artifacts stay local; the Python training sources are code
+# and are tracked so the source-contract tests run on a fresh checkout.
+ml-service/models/*
+!ml-service/models/*.py
 telegram-bot/.state.json
 # backup / pre-live snapshots (kept alongside server/data)
 *.bak
@@ -57,3 +60,7 @@ desktop.ini
 # --- Keep the EMPTY templates tracked (they document required vars) ---
 !.env.example
 !telegram-bot/.env.example
+
+# --- Python bytecode ---
+__pycache__/
+*.pyc

@@ -358,8 +358,8 @@ export const MTFDualBoardPanel = memo(function MTFDualBoardPanel({ market, onDee
 
   useEffect(() => {
     if (!sseSymKey && market !== 'INDIA') return; // nothing desk-specific to watch
-    const futSyms = market === 'GLOBALFUTURES' || market === 'EQUITY_SIM' ? '' : sseSymKey;
-    const globSyms = market === 'GLOBALFUTURES' || market === 'EQUITY_SIM' ? sseSymKey : '';
+    const futSyms = market === 'GLOBALFUTURES' ? '' : sseSymKey;
+    const globSyms = market === 'GLOBALFUTURES' ? sseSymKey : '';
     const inSyms = market === 'INDIA' ? (sseSymKey || 'RELIANCE,NIFTYBANK') : '';
     const buildUrl = () => {
       const params = new URLSearchParams();
@@ -916,7 +916,7 @@ export const MTFDualBoardPanel = memo(function MTFDualBoardPanel({ market, onDee
       <div className="quantum-panel rounded-2xl p-3 bg-gradient-to-br from-violet-500/[0.06] via-transparent to-cyan-500/[0.05] border border-violet-500/20">
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[12px] font-black text-violet-200 tracking-wider">🧠 MTF SIGNALS BOARD <span className="text-slate-500">(DUAL-TIMEFRAME · PURE 8 INSTITUTIONAL TOP INDICATORS · PAKKA LONG/SHORT LOCK · 3-MODEL OLLAMA AI)</span></span>
+            <span className="text-[12px] font-black text-violet-200 tracking-wider">🧠 MTF SIGNALS BOARD <span className="text-slate-500">(DUAL-TIMEFRAME · PURE 8 INSTITUTIONAL TOP INDICATORS · PAKKA LONG/SHORT LOCK · 3-SEAT FREELMAPI AI GUARD)</span></span>
             <span className={`px-1.5 py-0.5 rounded-md text-[9px] font-black border font-mono ${isUsdBoard ? 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10' : 'text-amber-300 border-amber-500/40 bg-amber-500/10'}`}
               title="24×7 Direct Ultra-Fast Market Price Fetching">
               {ccyTag}{isUsdBoard && board?.fx ? ` · ₹${fmt(board.fx, 1)}/USDT` : ''} · ⚡ 24×7 DIRECT LIVE
@@ -933,8 +933,8 @@ export const MTFDualBoardPanel = memo(function MTFDualBoardPanel({ market, onDee
             <span className="px-1.5 py-0.5 rounded-md text-[9px] font-black border border-amber-500/45 bg-amber-500/15 text-amber-200" title="Top 6 Deep-Trend (LONG ya SHORT) + Gold/Silver (XAU/XAG Perps) + Equity Sim">
               🔥 TOP 6 DEEP-TREND + 🪙 XAU/XAG + 🌎 EQUITY SIM
             </span>
-            <span className="px-1.5 py-0.5 rounded-md text-[9px] font-black border border-violet-500/45 bg-violet-500/15 text-violet-200" title="Optimized for 3 Local Ollama AI Models (Fast Scan + Deep Reasoner + Risk/Vision Sentinel)">
-              🤖 3-MODEL OLLAMA TURBO: {(board?.ollamaTrio?.models || ['qwen3:8b', 'deepseek-r1:14b', 'qwen2.5vl:7b']).join(' + ')}
+            <span className="px-1.5 py-0.5 rounded-md text-[9px] font-black border border-violet-500/45 bg-violet-500/15 text-violet-200" title="FreeLLMAPI 3-seat AI guard (auto:fast momentum + auto:smart structure + auto:balanced risk/sentinel)">
+              🤖 3-SEAT FREELMAPI GUARD: {(board?.aiGuard?.models || ['auto:fast', 'auto:smart', 'auto:balanced']).join(' + ')}
             </span>
             <span className="px-1.5 py-0.5 rounded-md text-[9px] font-black border border-cyan-500/40 bg-cyan-500/10 text-cyan-200" title="Full 100% CoinDCX Wallet Auto-Deployment + wallet-tier leverage (below ₹10,000 → 10x, ₹10,000+ → 5x)">
               ⚡ {walletDeployPct}% WALLET ₹{deployed95WalletINR.toLocaleString('en-IN')} / ₹{Math.round(effectiveWalletINR).toLocaleString('en-IN')}{liveFutWalletINR > 0 ? ` (${liveFutMarginCcy})` : ''} → {activeLeverage}x LEV
@@ -1739,13 +1739,13 @@ export const MTFDualBoardPanel = memo(function MTFDualBoardPanel({ market, onDee
                       🛡️ Fee-BE {rowCcyPrefix}{fmt(r.feeProtection.feeBreakevenPrice)}
                     </span>
                   )}
-                  {r.ollamaTrio && (
-                    <span className="px-1.5 py-0.5 rounded border border-violet-500/45 bg-violet-500/15 text-violet-200 font-black" title={r.ollamaTrio.liveNote || (r.ollamaTrio.ruleBasedGuard ? 'Rule-based 3-seat guard — Ollama live models offline (koi live AI response nahi)' : '3-Model Local Ollama AI Ensemble (live)')}>
-                      🧠 {r.ollamaTrio.honestLabel || r.ollamaTrio.verdict}{r.ollamaTrio.latencyMs != null ? ` (${r.ollamaTrio.latencyMs}ms)` : ''}
+                  {r.aiGuard && (
+                    <span className="px-1.5 py-0.5 rounded border border-violet-500/45 bg-violet-500/15 text-violet-200 font-black" title={r.aiGuard.liveNote || (r.aiGuard.ruleBasedGuard ? 'Rule-based 3-seat guard — FreeLLMAPI router offline (koi live AI response nahi)' : 'FreeLLMAPI 3-seat AI guard (live)')}>
+                      🧠 {r.aiGuard.honestLabel || r.aiGuard.verdict}{r.aiGuard.latencyMs != null ? ` (${r.aiGuard.latencyMs}ms)` : ''}
                     </span>
                   )}
                   {r.aiAgents && (
-                    <span className="px-1.5 py-0.5 rounded border border-violet-500/35 bg-violet-500/10 text-violet-200" title={`Top AI Agents: ${(r.aiAgents.topSeats || []).join(', ') || '16-seat ensemble'} · Ollama: ${r.aiAgents.councilModel || r.aiAgents.ollamaScanModel || 'ready'}`}>
+                    <span className="px-1.5 py-0.5 rounded border border-violet-500/35 bg-violet-500/10 text-violet-200" title={`Top AI Agents: ${(r.aiAgents.topSeats || []).join(', ') || '16-seat ensemble'} · FreeLLMAPI: ${r.aiAgents.councilModel || r.aiAgents.aiGuardFastModel || 'ready'}`}>
                       🤖 {r.aiAgents.svaAction ? `SVA ${r.aiAgents.svaAction}` : 'AI Agents'}{r.aiAgents.voters ? ` · ${r.aiAgents.voters}/16` : ''}
                     </span>
                   )}

@@ -32,6 +32,8 @@ import { registerMeshRoutes } from './mcp/mesh.js';
 // (missing key), so a key-gap is visible without hitting the API.
 import { allCards } from './mcp/agents/registry.js';
 import { registerAITradingRoutes } from './ai/routes.js';
+// FreeLLMAPI is the ONLY inference router: boot warm + honest status.
+import { warmFreeLlm, freeLlmStatus, freeLlmReachableCached } from './ai/freellmapi.js';
 // v18.1: enriched /health — cached ml-service probe + agent liveness.
 import { mlServiceHealth } from './ai/mlHealth.js';
 // v21.12.0: committee visibility — boot banner + /health snapshot
@@ -427,6 +429,9 @@ validateEnv();
 
 // OpenAI-compatible providers — body is forwarded almost as-is.
 const OPENAI_COMPAT = {
+  // Local router first — dynamic base URL / unified key resolved per request
+  // from server/ai/freellmapi.js (the entry below is a shape placeholder).
+  freellmapi: { url: '', defModel: 'auto:balanced' },
   groq: { url: 'https://api.groq.com/openai/v1/chat/completions', defModel: 'openai/gpt-oss-120b' },
   openrouter: { url: 'https://openrouter.ai/api/v1/chat/completions', defModel: 'z-ai/glm-5.2:free' },
   cerebras: { url: 'https://api.cerebras.ai/v1/chat/completions', defModel: 'gpt-oss-120b' },
@@ -641,22 +646,22 @@ registerAITradingRoutes(routesApp, {
   jsonError,
 });
 
-// v21.36.0 OLLAMA LIFECYCLE BOOT HOOK: persisted AI mode 'cloud' ho to
-// boot pe hi local Ollama ke models RAM se unload kar do (service
-// chalti rehti hai; models disk se wapas load hote hain jab local
-// mode select ho). 'local'/'both' pe fast-seat model warm karo taaki
-// pehla board-scan cold-load se na bhooge. Fire-and-forget — boot
-// kabhi isse fail nahi hota (Ollama down par silently skip).
+// FREELMAPI BOOT WARM-UP: discover the local router, load its unified
+// key (env or freeapi.db), cache the model catalog and confirm auth
+// BEFORE the first board scan / council ask. Fire-and-forget — boot
+// never fails because the desktop app is closed; the sentinel retries
+// on demand and the UI shows the honest OFFLINE state.
 {
   const { getAiMode } = await import('./ai/aiMode.js');
-  const { unloadAllOllamaModels, warmOllamaModels } = await import('./ai/ollamaLifecycle.js');
-  const bootMode = getAiMode();
-  if (bootMode === 'cloud') {
-    unloadAllOllamaModels().then(r => { if (r.ok && r.unloaded.length) console.log(`[ollama] boot-cloud: unloaded ${r.unloaded.join(', ')} (RAM freed; cloud OpenCode mode)`); }).catch(() => {});
-  } else {
-    const models = [process.env.OLLAMA_MODEL, process.env.OLLAMA_VISION_MODEL].filter(Boolean);
-    if (models.length) warmOllamaModels(models).then(r => { if (r.loaded) console.log(`[ollama] boot: warmed ${r.warmed.join(', ')} (${r.loaded}/${r.warmed.length} loaded, keep_alive ${r.keepAlive})`); }).catch(() => {});
-  }
+  warmFreeLlm()
+    .then(r => {
+      if (r.ok) {
+        console.log(`[freellmapi] boot: ${r.baseUrl} ready · profile=${getAiMode()} · ${r.modelsCount} models · key=${r.keySource}`);
+      } else {
+        console.warn(`[freellmapi] boot: OFFLINE (${r.lastError || 'unreachable'}) — AI lanes will retry on demand; start the FreeLLMAPI desktop app (default 127.0.0.1:31415)`);
+      }
+    })
+    .catch(() => { /* never block boot */ });
 }
 
 // ============================================================
@@ -1581,6 +1586,8 @@ app.get('/api/feed-status', (_req, res) => {
 // ------------------------------------------------------------
 app.get('/api/ai-status', (_req, res) => {
   res.json({
+    freellmapi: freeLlmReachableCached(),
+    freellmapiBase: freeLlmStatus().baseUrl,
     gemini: !!KEYS.gemini,
     groq: !!KEYS.groq,
     claude: !!KEYS.claude,
@@ -1597,8 +1604,14 @@ app.get('/api/ai-status', (_req, res) => {
 // ------------------------------------------------------------
 for (const [name, cfg] of Object.entries(OPENAI_COMPAT)) {
   app.post(`/api/${name}`, async (req, res) => {
-    const key = KEYS[name];
-    if (!key) return jsonError(res, 503, `${name} not configured`);
+    // FreeLLMAPI resolves its base URL + unified key at call time; the
+    // static OPENAI_COMPAT map only carries the default model.
+    const dyn = name === 'freellmapi'
+      ? await import('./ai/freellmapi.js').then(m => m.freeLlmAgentCfg()).catch(() => null)
+      : null;
+    const key = dyn?.apiKey || KEYS[name];
+    const upstreamUrl = dyn?.url || cfg.url;
+    if (!key || !upstreamUrl) return jsonError(res, 503, `${name} not configured`);
     try {
       const body = { ...req.body };
       // v10.13 (deep-recheck L-4): clamp client-controlled completion params
@@ -1631,7 +1644,7 @@ for (const [name, cfg] of Object.entries(OPENAI_COMPAT)) {
       const chainFetch = (url, init = {}) =>
         fetch(url, { ...init, signal: chainDeadline });
 
-      let upstream = await chainFetch(cfg.url, {
+      let upstream = await chainFetch(upstreamUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1648,7 +1661,7 @@ for (const [name, cfg] of Object.entries(OPENAI_COMPAT)) {
       // latency and zero resilience). Retry with the CURRENT default.
       if (!upstream.ok && name === 'groq' && (upstream.status === 400 || upstream.status === 404) && !chainDeadline.aborted) {
         body.model = 'openai/gpt-oss-120b';
-        upstream = await chainFetch(cfg.url, {
+        upstream = await chainFetch(upstreamUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -3501,7 +3514,7 @@ try {
 // drain in-flight responses before exiting.
 _httpServer = app.listen(PORT, async () => {
   const ready = Object.entries(KEYS).filter(([, v]) => v).map(([k]) => k);
-  console.log(`[smartai] server on :${PORT} — providers: ${ready.join(', ') || 'NONE'}`);
+  console.log(`[smartai] server on :${PORT} — direct provider keys: ${ready.join(', ') || 'NONE'} · AI router: FreeLLMAPI ${freeLlmReachableCached() ? 'ready' : 'probing'}`);
   console.log('[smartai] Authentication: enabled (server-side PIN + httpOnly session cookie)');
   // v20.8.3: SERVER_VERSION se boot line (v20.4.2 hardcoded string 19 releases
   // stale thi) — /api/ping `v`, /health `version` aur ye line ab ek hi source se.

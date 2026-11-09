@@ -52,7 +52,7 @@
     "vite": "^7.3.6",
     "vitest": "^4.1.9"
   },
-  "description": "SmartAI Pro v21 - Three-Desk Trading Terminal (deduped committee + Ollama superintelligence + vision seat + telegram self-heal)",
+  "description": "SmartAI Pro v21 - Three-Desk Trading Terminal (deduped committee + FreeLLMAPI superintelligence + vision seat + telegram self-heal)",
   "overrides": {
     "qs": "^6.16.0",
     "proxy-addr": "^2.0.8"

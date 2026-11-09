@@ -460,8 +460,7 @@ export async function runCouncilBoard({ market, signals, regime, deps }) {
 
   // ---- 6 persona batch calls (parallel) ----
   const roles = availableRoles(mkt);
-  // v21.27: mode-aware availability gate (LOCAL = Ollama; CLOUD =
-  // OpenCode or the Ollama fallback), probed and cached.
+  // Availability gate — FreeLLMAPI router health, probed and cached.
   const llmOnline = await aiEngineOnline(deps);
   const verdictsBySymbol = {}; // sym → {role: verdict}
   let model = 'deterministic';

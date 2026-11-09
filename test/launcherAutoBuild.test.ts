@@ -415,7 +415,7 @@ describe('v20.8.3 frontend stale-build visibility', () => {
     const m = VERSION_TS.match(/APP_VERSION = '([^']+)'/);
     expect(m).toBeTruthy();
     expect(m![1]).toBe(PKG.version);
-    expect(PKG.version).toBe('21.36.0'); // v21.36.0 (release-bump: cloud AI-lane + Ollama lifecycle + universe knob + SSE refresh + coordinated version-stamp)
+    expect(PKG.version).toBe('21.36.0'); // v21.36.0 (release-bump: FreeLLMAPI migration + universe knob + SSE refresh + coordinated version-stamp)
   });
 
   it('Watchdog bat: v21.36.0 stamps + auto-build line + NO stale version stamps', () => {

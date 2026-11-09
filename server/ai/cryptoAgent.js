@@ -36,15 +36,17 @@ import { getPerpIntel, perpIntelWire, perpIntelEnabled } from './perpIntel.js';
 import { verifySignal } from './signalVerifier.js';
 // v13.2 A5: MCP governance — every tool call is rate-limited + audit-logged
 import { withMcpAudit } from './mcpAudit.js';
-// v18.7 ENGINE SENTINEL — health-aware provider chain: cooldown
-// fast-fail, auto half-open recovery, honest status line, and the
-// keyless LOCAL ollama engine when installed.
-import { engineSkip, engineTrack, engineOk, engineStatusLine, ollamaProbe, ollamaCompatCfg } from './llmSentinel.js';
+// ENGINE SENTINEL — health-aware provider chain (cooldown fast-fail,
+// auto half-open recovery, honest status line). FreeLLMAPI is the first
+// engine; direct provider keys remain a fallback only.
+import { engineSkip, engineTrack, engineOk, engineStatusLine } from './llmSentinel.js';
+import { freeLlmAgentCfg, freeLlmReachableCached } from './freellmapi.js';
 
 const MAX_TOOL_ROUNDS = 6;
 const PER_ROUND_TIMEOUT_MS = 30000;
-// v18.8: the local ollama engine gets a CPU-realistic per-round budget.
-const OLLAMA_ROUND_TIMEOUT_MS = 120000;
+// FreeLLMAPI routes to remote upstreams; a smart-seat tool round can take
+// longer than a direct small-model call. 90s keeps the agent honest.
+const FREELMAPI_ROUND_TIMEOUT_MS = Number(process.env.FREELLMAPI_AGENT_TIMEOUT_MS) || 90000;
 const r2 = (v) => (Number.isFinite(v) ? Math.round(v * 100) / 100 : null);
 
 // ------------------------------------------------------------
@@ -914,11 +916,16 @@ async function _runGeminiLoop(model, { systemPrompt, messages, deps, toolTrace }
 
 async function runOpenAICompatAgent({ systemPrompt, messages, deps, toolTrace, provider, cfgOverride = null }) {
   const { KEYS, OPENAI_COMPAT } = deps;
-  // v18.7: cfgOverride lets the keyless LOCAL ollama engine ride the
-  // exact same loop (its cfg is not in OPENAI_COMPAT; auth is inert).
+  // cfgOverride lets the managed FreeLLMAPI router ride this exact loop;
+  // its key/base URL live in the cfg, never in the provider key map.
   const cfg = cfgOverride || OPENAI_COMPAT?.[provider];
-  if (!cfg || !KEYS?.[provider]) return null;
-  const modelChain = provider === 'groq' ? [cfg.defModel, 'llama-3.3-70b-versatile'] : [cfg.defModel];
+  if (!cfg) return null;
+  if (!cfg.apiKey && !KEYS?.[provider]) return null;
+  const modelChain = provider === 'freellmapi'
+    ? [cfg.defModel, cfg.deepModel, cfg.fastModel].filter(Boolean)
+    : provider === 'groq'
+      ? [cfg.defModel, 'llama-3.3-70b-versatile']
+      : [cfg.defModel];
   let lastErr = null;
   for (const model of modelChain) {
     try {
@@ -933,7 +940,8 @@ async function runOpenAICompatAgent({ systemPrompt, messages, deps, toolTrace, p
 
 async function _runOpenAICompatLoop(model, cfg, { systemPrompt, messages, deps, toolTrace, provider }) {
   const { KEYS } = deps;
-  if (!KEYS?.[provider]) return null;
+  const authKey = cfg.apiKey || KEYS?.[provider];
+  if (!authKey) return null;
   const reqMessages = [
     { role: 'system', content: systemPrompt },
     ...messages.filter(m => m.role !== 'system').map(m => ({ role: m.role, content: String(m.content || '') })),
@@ -949,14 +957,12 @@ async function _runOpenAICompatLoop(model, cfg, { systemPrompt, messages, deps, 
     // "up to 6 tool rounds" was impossible on the Groq/Cerebras chain.
     body.tools = CRYPTO_AGENT_TOOLS;
 
-    // v18.8: provider-aware round budget — the local ollama engine on a
-    // CPU-only box can take 30-90s per tool round (the old shared 30s
-    // bound made a WORKING local engine time out every round). Cloud
-    // engines keep the tight 30s.
-    const roundTimeout = provider === 'ollama' ? OLLAMA_ROUND_TIMEOUT_MS : PER_ROUND_TIMEOUT_MS;
+    // Provider-aware round budget: the managed router gets room for a
+    // smart-seat tool round; direct providers keep the tight 30s.
+    const roundTimeout = provider === 'freellmapi' ? FREELMAPI_ROUND_TIMEOUT_MS : PER_ROUND_TIMEOUT_MS;
     const res = await fetch(cfg.url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${KEYS[provider]}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authKey}` },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(roundTimeout),
     });
@@ -1002,7 +1008,8 @@ export async function runCryptoAgent(messages, deps) {
     connected: coindcxConnected(),
     // v18.7: EVERY configured cloud engine counts (was gemini/groq/
     // cerebras only — a saved openrouter key still showed offline).
-    aiOnline: !!(d.KEYS?.gemini || d.KEYS?.groq || d.KEYS?.cerebras || d.KEYS?.openrouter || d.KEYS?.huggingface || d.KEYS?.nvidia),
+    // FreeLLMAPI (the managed router) is the primary engine now.
+    aiOnline: !!(freeLlmReachableCached() || d.KEYS?.gemini || d.KEYS?.groq || d.KEYS?.cerebras || d.KEYS?.openrouter || d.KEYS?.huggingface || d.KEYS?.nvidia),
   };
 
   // v10.8 PRO #3: persistent memory — recent turns + recurring focus
@@ -1011,30 +1018,33 @@ export async function runCryptoAgent(messages, deps) {
   const systemPrompt = buildCryptoSystemPrompt(ctx) + (memBlock ? `\n\nDESK MEMORY — past conversations with this user:\n${memBlock}` : '');
   const toolTrace = [];
 
-  // v18.7 ENGINE SENTINEL CHAIN — three upgrades over the old fixed
-  // Gemini→Groq→Cerebras ladder:
-  //   1. EXTENDED  — openrouter / huggingface / nvidia ride after
-  //      cerebras (any saved key = another live engine).
+  // ENGINE SENTINEL CHAIN — FreeLLMAPI first, direct provider keys as a
+  // fallback:
+  //   1. MANAGED — the local FreeLLMAPI router owns upstream keys/quotas
+  //      and smart routing, so the desk keeps LLM prose even with an
+  //      empty .env.
   //   2. HEALTH-AWARE — providers in cooldown are skipped FAST (no
   //      repeated 30s hangs on every chat while an engine is down);
   //      cooldown expiry auto-retries it (half-open) — engines come
   //      back WITHOUT a restart.
-  //   3. LOCAL — a keyless Ollama install (127.0.0.1:11434) joins the
-  //      chain as the last engine, so the desk keeps LLM prose even
-  //      with every cloud provider down.
+  //   3. DIRECT KEYS — gemini/openrouter/huggingface/nvidia ride after
+  //      FreeLLMAPI (any saved key = another live engine).
   const cloudProviders = ['groq', 'cerebras', 'openrouter', 'huggingface', 'nvidia'];
+  const dispatching = new Set();
   const steps = [];
+  const flCfg = await freeLlmAgentCfg().catch(() => null);
+  if (flCfg && !engineSkip('freellmapi')) {
+    dispatching.add('freellmapi');
+    steps.push({
+      provider: 'freellmapi',
+      run: () => runOpenAICompatAgent({ systemPrompt, messages, deps: d, toolTrace, provider: 'freellmapi', cfgOverride: flCfg }),
+    });
+  }
   if (d.KEYS?.gemini) steps.push({ provider: 'gemini', run: () => runGeminiAgent({ systemPrompt, messages, deps: d, toolTrace }) });
   for (const p of cloudProviders) {
     if (d.KEYS?.[p] && d.OPENAI_COMPAT?.[p]) steps.push({ provider: p, run: () => runOpenAICompatAgent({ systemPrompt, messages, deps: d, toolTrace, provider: p }) });
   }
-  if (await ollamaProbe().catch(() => false)) {
-    steps.push({
-      provider: 'ollama',
-      run: () => runOpenAICompatAgent({ systemPrompt, messages, deps: { ...d, KEYS: { ...d.KEYS, ollama: 'local' } }, toolTrace, provider: 'ollama', cfgOverride: ollamaCompatCfg() }),
-    });
-  }
-  const chain = steps.filter(s => !engineSkip(s.provider));
+  const chain = steps.filter(s => dispatching.has(s.provider) || !engineSkip(s.provider));
 
   const errors = [];
   for (const step of chain) {

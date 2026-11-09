@@ -608,12 +608,11 @@ export default memo(function CoinDcxTab() {
           price kis cheez ki hai. */}
       {desk === 'GLOBAL' && <GlobalDeskFeedStrip />}
 
-      {/* ============ v21.0.3 LOCAL LLM (OLLAMA) MODEL STRIP ============
-          India tab jaisa hi — "konsa local ollama model use ho raha hai"
-          ab crypto desk par bhi top-level visible (pehle sirf collapsed
-          chat panel ke andar). Chip: SCAN + DEEP model; hover: vision/
-          ctx/installed; 30s auto-refresh + RECHECK. Dono tabs me accurate
-          aur hamesha-visible model attribution. */}
+      {/* ============ FreeLLMAPI AI router HEALTH STRIP ============
+          India tab jaisa hi — intelligence profile + router/model
+          attribution ab crypto desk par bhi top-level visible (pehle
+          sirf collapsed chat panel ke andar). Hover: smart/balanced/
+          fast + vision + guard seats; 30s auto-refresh + RECHECK. */}
       <div className="quantum-panel rounded-2xl py-1.5">
         <EngineHealthStrip />
         {/* v21.1.0 (Phase-3): operational health — feed ages / kills /
@@ -680,7 +679,7 @@ export default memo(function CoinDcxTab() {
             ? 'CoinDCX GLOBAL FUTURES + GOLD/SILVER (XAU/XAG) + EQUITY SIM — 2-Timeframe Modes (15m Deep + 5m Action · 1h Deep + 15m Action) in RT USDT'
             : desk === 'METALS'
               ? `🥇 GOLD (XAU/USDT) + SILVER (XAG/USDT) — CoinDCX commodity perps (B-XAU_USDT / B-XAG_USDT), ${models.length || 16}-model committee + Dual-TF timing`
-              : `🌍 GLOBAL EQUITY FUTURES SIM — ${models.length || 16}-model committee + Dual-TF signals`} → 8 Institutional + 10 World Top Indicators (Ledger-Calibrated Win-Rate) · 24×7 6s Direct Market Prices · 3-Model Local Ollama AI · Single LIVE Auto-Trade (100% CoinDCX Wallet + <₹10k→10x / ≥₹10k→5x Leverage) · Full CoinDCX Active Position Control & Active-Trade-Only Deep Monitor (TP1/TP2 Trailing SL + Reversal Profit Book)`} />
+              : `🌍 GLOBAL EQUITY FUTURES SIM — ${models.length || 16}-model committee + Dual-TF signals`} → 8 Institutional + 10 World Top Indicators (Ledger-Calibrated Win-Rate) · 24×7 6s Direct Market Prices · 3-Seat FreeLLMAPI AI Guard · Single LIVE Auto-Trade (100% CoinDCX Wallet + <₹10k→10x / ≥₹10k→5x Leverage) · Full CoinDCX Active Position Control & Active-Trade-Only Deep Monitor (TP1/TP2 Trailing SL + Reversal Profit Book)`} />
         </div>
         <div id="cx-mtf-dual">
           <MTFDualBoardPanel

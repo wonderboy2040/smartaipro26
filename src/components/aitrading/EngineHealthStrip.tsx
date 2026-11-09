@@ -1,24 +1,25 @@
 // ============================================================
-// aitrading/EngineHealthStrip — v18.7 AI ENGINE SENTINEL (UI)
+// aitrading/EngineHealthStrip — AI ENGINE SENTINEL (UI)
 // ------------------------------------------------------------
-// Live health chips for every language engine + a RECHECK button.
-// The "AI language engines offline" report becomes actionable:
-//   • READY (green)      — engine answered recently
-//   • COOLDOWN (amber)   — engine down, AUTO-RETRY in Ns (sentinel
-//                          half-open; no restart needed)
-//   • ERROR (red)        — last error shown on hover (e.g. 429 /
-//                          invalid key)
-//   • NO KEY (slate)     — engine not configured → Settings > AI Keys
-//   • OLLAMA (violet)    — keyless local engine detected
+// Live health chips for the FreeLLMAPI router + any direct-key
+// fallback engines, plus a RECHECK button.
+//   • READY (green)    — engine answered recently
+//   • COOLDOWN (amber) — engine down, AUTO-RETRY in Ns (sentinel
+//                        half-open; no restart needed)
+//   • ERROR (red)      — last error shown on hover (e.g. 429)
+//   • NO KEY (slate)   — fallback engine not configured
+//   • FREELMAPI (cyan) — local router status + smart/balanced/fast
+//                        virtual models and pinned vision ladder
 // Data: GET /api/ai/engines (30s auto-refresh + refreshKey bump on
 // every agent answer), POST /api/ai/engines/recheck (clears cooldowns
-// NOW + re-probes ollama). Key values never reach the browser.
+// NOW + re-probes the router). Key values never reach the browser.
 // ============================================================
 import { memo, useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../../utils/api';
 import { RefreshCw, Zap } from 'lucide-react';
 
 type EngineState = 'no-key' | 'idle' | 'cooldown' | 'ready' | 'tried';
+type AiMode = 'smart' | 'balanced' | 'fast';
 
 interface EngineRow {
   provider: string;
@@ -29,99 +30,94 @@ interface EngineRow {
   lastOkAgeSec?: number | null;
 }
 
-// v21.0: extended ollama status — GET /api/ai/engines ke { ollama } block
-// me ab model/deepModel/visionModel/numCtx/keepAlive/ramGuard aate hain.
-interface OllamaInfo {
+interface FreeLlmInfo {
+  available?: boolean;
   reachable?: boolean;
-  model?: string;
-  deepModel?: string | null;
-  visionModel?: string | null;
-  models?: string[];
-  numCtx?: number;
-  numCtxDeep?: number;
-  keepAlive?: string;
-  ramGuard?: { sysTotalGb?: number; ctxClamped?: boolean };
-  checkedAgeSec?: number;
+  baseUrl?: string | null;
+  apiBase?: string | null;
+  keyPresent?: boolean;
+  keySource?: string;
+  modelsCount?: number;
+  models?: Record<string, string>;
+  visionModels?: string[];
+  lastRoutedVia?: string | null;
+  checkedAgeSec?: number | null;
+  probeLatencyMs?: number | null;
+  lastError?: string | null;
 }
 
-// v21.27 LOCAL/CLOUD/BOTH mode + OpenCode bridge status (from /api/ai/engines).
+interface AiGuardInfo {
+  engine?: string;
+  reachable?: boolean;
+  profile?: AiMode;
+  fastModel?: string;
+  deepModel?: string;
+  sentinelModel?: string;
+  models?: string[];
+}
+
 interface AiModeInfo {
-  mode: 'local' | 'cloud' | 'both';
+  mode: AiMode;
   source?: string;
   persisted?: boolean;
 }
 
-interface OpenCodeBreakerRow {
-  cooldownRemainSec?: number;
-  lastError?: string | null;
-  calls?: number;
-  lastOkAgeSec?: number | null;
-}
-
-interface OpenCodeInfo {
-  available?: boolean;
-  probed?: boolean;
-  version?: string | null;
-  loggedIn?: boolean | null;
-  models?: string[];
-  breaker?: Record<string, OpenCodeBreakerRow>;
-  lastError?: string | null;
-  callsToday?: number;
-  maxCallsPerDay?: number;
-}
-
 const LABEL: Record<string, string> = {
+  freellmapi: 'FREELMAPI',
   gemini: 'GEMINI', groq: 'GROQ', cerebras: 'CEREBRAS',
   openrouter: 'OPENROUTER', huggingface: 'HUGGINGFACE', nvidia: 'NVIDIA',
-  ollama: 'OLLAMA·LOCAL',
 };
 
 const MODE_SOURCE_LABEL: Record<string, string> = {
   runtime: 'runtime switch',
   file: 'saved server/data/ai-mode.json',
   env: 'AI_MODE env seed',
-  'env-local-only': 'LLM_LOCAL_ONLY env seed',
+  'env-profile': 'FREELLMAPI_PROFILE env seed',
   default: 'safe default',
 };
 
+const MODE_CLASS: Record<AiMode, string> = {
+  smart: 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300',
+  balanced: 'bg-cyan-500/15 border-cyan-500/30 text-cyan-300',
+  fast: 'bg-violet-500/15 border-violet-500/30 text-violet-300',
+};
+
 function modeTip(m: AiModeInfo | null): string {
-  if (!m) return 'AI mode unknown — /api/ai/engines se mode nahi aaya';
+  if (!m) return 'Intelligence profile unknown — /api/ai/engines se mode nahi aaya';
   const src = MODE_SOURCE_LABEL[m.source || ''] || m.source || 'unknown';
   const saved = m.persisted ? 'restart-safe (saved)' : 'runtime only (filesystem read-only)';
-  if (m.mode === 'both') {
-    return `BOTH — OpenCode cloud + local Ollama run in parallel; verdicts are merged (dual-engine agree/conflict). No paid APIs. Source: ${src} · ${saved}.`;
-  }
-  return m.mode === 'cloud'
-    ? `CLOUD — OpenCode free models first (GLM scan / DeepSeek deep), then local Ollama fallback. No paid APIs. Source: ${src} · ${saved}.`
-    : `LOCAL — local Ollama only, zero cloud calls. Source: ${src} · ${saved}.`;
+  const model = m.mode === 'smart' ? 'auto:smart' : m.mode === 'balanced' ? 'auto:balanced' : 'auto:fast';
+  const note = m.mode === 'smart'
+    ? 'Deepest council / validator / desk-agent answers.'
+    : m.mode === 'balanced'
+      ? 'Quality/latency blend for desk agents and board scans; deep analysis still uses auto:smart.'
+      : 'Quickest eligible model for scans and the MTF guard; deep analysis still uses auto:smart.';
+  return `${m.mode.toUpperCase()} → ${model}. ${note} Source: ${src} · ${saved}.`;
 }
 
-function opencodeTip(oc: OpenCodeInfo | null, ol?: OllamaInfo | null): string {
-  if (!oc) return 'OpenCode bridge status unavailable';
+function freeLlmTip(st: FreeLlmInfo | null, guard: AiGuardInfo | null, mode: AiModeInfo | null): string {
+  if (!st) return 'FreeLLMAPI status unavailable — desktop app start karo (default 127.0.0.1:31415)';
+  const active = mode ? `active profile ${mode.mode.toUpperCase()}` : undefined;
   const parts = [
-    oc.available ? `CLI ready${oc.version ? ` (v${oc.version})` : ''}` : 'CLI not available',
-    oc.loggedIn === false ? 'login missing — `opencode auth login` chalao' : oc.loggedIn === true ? 'logged in' : 'login state unknown',
-    oc.models?.length ? `${oc.models.length} models listed` : 'models list empty',
-    oc.callsToday != null ? `calls today ${oc.callsToday}${oc.maxCallsPerDay ? `/${oc.maxCallsPerDay}` : ''}` : undefined,
-    oc.lastError ? `last probe error: ${oc.lastError}` : undefined,
+    st.available ? 'router ONLINE' : st.reachable ? 'router reachable but NO unified key' : 'router OFFLINE',
+    active,
+    st.baseUrl ? st.baseUrl : undefined,
+    st.keyPresent ? `key from ${st.keySource || 'unknown'}` : 'unified key missing',
+    st.modelsCount != null ? `${st.modelsCount} models available` : undefined,
+    st.models ? `smart=${st.models.smart} · balanced=${st.models.balanced} · fast=${st.models.fast}` : undefined,
+    st.visionModels?.length ? `vision: ${st.visionModels.join(', ')}` : undefined,
+    guard?.models?.length ? `AI guard seats: ${guard.models.join(' + ')}` : undefined,
+    st.lastRoutedVia ? `last routed via ${st.lastRoutedVia}` : undefined,
+    st.checkedAgeSec != null ? `probed ${st.checkedAgeSec}s pehle` : undefined,
+    st.lastError ? `last error: ${st.lastError}` : undefined,
   ].filter(Boolean) as string[];
-  const breaker = Object.entries(oc.breaker || {})
-    .filter(([, r]) => Number(r?.cooldownRemainSec) > 0 || r?.lastError)
-    .slice(0, 3)
-    .map(([model, r]) => `${model}: ${Number(r?.cooldownRemainSec) > 0 ? `cooldown ${r.cooldownRemainSec}s` : (r.lastError || 'error')}`);
-  if (breaker.length) parts.push(`breaker → ${breaker.join(' | ')}`);
-  if (oc.available && oc.loggedIn !== false) {
-    parts.push(`cloud asks: ${ol?.reachable ? 'OpenCode → Ollama fallback' : 'OpenCode only (Ollama unreachable)'}`);
-  } else {
-    parts.push(`cloud asks fall back to Ollama${ol?.reachable ? '' : ' — but Ollama is offline too'}`);
-  }
   return parts.join(' · ');
 }
 
 function chipClass(e: EngineRow): string {
-  if (e.provider === 'ollama') {
+  if (e.provider === 'freellmapi') {
     return e.configured
-      ? 'bg-violet-500/15 border-violet-500/30 text-violet-300'
+      ? 'bg-cyan-500/15 border-cyan-500/30 text-cyan-300'
       : 'bg-white/[0.02] border-white/10 text-slate-600';
   }
   if (!e.configured) return 'bg-white/[0.02] border-white/10 text-slate-600';
@@ -133,32 +129,26 @@ function chipClass(e: EngineRow): string {
   }
 }
 
-// v21.0.3: model short-name — 'qwen3:8b' → 'QWEN3·8B', 'deepseek-r1:14b'
-// → 'R1·14B', 'qwen2.5vl:7b' → 'Q2.5VL·7B' style compact chip text.
+/** Compact virtual-model label: 'auto:smart' → 'SMART'. */
 function modelShort(m?: string | null): string {
   if (!m) return '';
   const raw = String(m);
-  const [f, v] = raw.split(':');
-  if (!v) return raw.slice(0, 12).toUpperCase();
-  let fam = f.replace(/[^a-zA-Z0-9.]/g, '').toUpperCase();
-  if (fam.startsWith('DEEPSEEK')) fam = fam.includes('R1') ? 'R1' : 'DSEEK';
-  else if (/^QWEN2\.?5?VL/.test(fam)) fam = 'Q2.5VL';
-  else if (/^QWEN3.?VL/.test(fam)) fam = 'QWEN3VL'; // v21.0.6 [audit]: qwen3-vl:8b → QWEN3VL·8B (slice(6) se 'QWEN3V' ho raha tha)
-  else if (fam.length > 6) fam = fam.slice(0, 6);
-  return `${fam}·${v.toUpperCase()}`;
+  if (raw.startsWith('auto:')) return raw.slice(5).toUpperCase();
+  if (raw === 'fusion') return 'FUSION';
+  return raw.slice(0, 14).toUpperCase();
 }
 
-function chipText(e: EngineRow, ol?: OllamaInfo | null): string {
-  if (e.provider === 'ollama') {
-    if (!e.configured) return 'OLLAMA —';
-    // v21.0.3: chip par SCAN + DEEP dono models (accurate attribution):
-    // 'QWEN3·8B ↗R1·14B' — scan boards/chat ke liye, ↗ deep (🔬 deep
-    // ensemble) ke liye. Vision tooltip me (chart 👁 button pe model
-    // verdict ke saath khud aata hai).
-    const scan = modelShort(ol?.model);
-    const deep = modelShort(ol?.deepModel);
-    const same = !deep || deep === scan;
-    return scan ? (same ? scan : `${scan} ↗${deep}`) : 'OLLAMA LOCAL';
+function chipText(e: EngineRow, st: FreeLlmInfo | null, mode: AiModeInfo | null): string {
+  if (e.provider === 'freellmapi') {
+    if (!e.configured) return 'FREELMAPI —';
+    const active = modelShort(st?.models?.[mode?.mode || 'smart'] || (mode?.mode ? `auto:${mode.mode}` : 'auto:smart'));
+    const routed = st?.lastRoutedVia ? ` · ${st.lastRoutedVia.split('/').pop()}` : '';
+    switch (e.state) {
+      case 'cooldown': return `FREELMAPI ↻${e.cooldownRemainSec ?? 0}s`;
+      case 'tried': return 'FREELMAPI ✗';
+      case 'ready': return `FREELMAPI ✓ ${active}${routed}`;
+      default: return `FREELMAPI ${active}`;
+    }
   }
   if (!e.configured) return `${LABEL[e.provider] || e.provider} NO-KEY`;
   switch (e.state) {
@@ -169,158 +159,103 @@ function chipText(e: EngineRow, ol?: OllamaInfo | null): string {
   }
 }
 
-function chipTitle(e: EngineRow, ol?: OllamaInfo | null): string {
-  if (e.provider === 'ollama') {
-    if (!e.configured) return 'Ollama install karo (localhost:11434) to get a keyless local language engine';
-    const parts = [
-      'keyless local engine (127.0.0.1:11434)',
-      `scan (board/chat/council): ${ol?.model || '?'}`,
-      `deep (🔬 deep ensemble): ${ol?.deepModel || 'same as scan'}`,
-      ol?.visionModel ? `vision (👁 chart button): ${ol.visionModel}` : 'vision: NOT installed (ollama pull qwen2.5vl:7b)',
-      // v21.0.6 [audit]: scan vs deep ctx alag-alag dikho jab env ne alag
-      // set kiya ho (OLLAMA_NUM_CTX vs OLLAMA_NUM_CTX_DEEP) — pehle sirf
-      // scan ctx dikhta tha.
-      ol?.numCtxDeep && ol.numCtxDeep !== ol.numCtx
-        ? `ctx ${ol.numCtx ?? '?'} (deep ${ol.numCtxDeep}) · keep_alive ${ol?.keepAlive || '5m'}`
-        : `ctx ${ol?.numCtx ?? '?'} · keep_alive ${ol?.keepAlive || '5m'}`,
-      ol?.ramGuard?.ctxClamped ? `RAM guard ON (${ol.ramGuard.sysTotalGb}GB system → ctx clamped)` : undefined,
-      ol?.models?.length ? `installed: ${ol.models.slice(0, 6).join(', ')}` : undefined,
-      ol?.checkedAgeSec != null ? `probed ${ol.checkedAgeSec.toFixed(0)}s pehle` : undefined,
-    ].filter(Boolean);
-    return parts.join(' · ');
-  }
-  if (!e.configured) return 'key configured nahi hai — Settings > AI Keys me free key daalo';
+function chipTitle(e: EngineRow, st: FreeLlmInfo | null, guard: AiGuardInfo | null, mode: AiModeInfo | null): string {
+  if (e.provider === 'freellmapi') return freeLlmTip(st, guard, mode);
+  if (!e.configured) return 'Direct provider key configured nahi hai — fallback engine sirf tab chalta hai jab key ho. FreeLLMAPI primary hai.';
   switch (e.state) {
-    case 'ready': return `engine ONLINE (last ok ${e.lastOkAgeSec ?? '?'}s pehle)`;
+    case 'ready': return `engine ONLINE (last ok ${e.lastOkAgeSec ?? '?'}s pehle) · direct-key fallback`;
     case 'cooldown': return `down — AUTO-RETRY ${e.cooldownRemainSec ?? 0}s me (sentinel half-open) · last: ${e.lastError || '?'}`;
-    case 'tried': return `last error: ${e.lastError || 'no response'}`;
-    default: return 'armed — abhi koi attempt nahi hua';
+    case 'tried': return `last error: ${e.lastError || 'no response'} · direct-key fallback`;
+    default: return 'armed — abhi koi attempt nahi hua · direct-key fallback';
   }
 }
 
 export const EngineHealthStrip = memo(function EngineHealthStrip({ refreshKey = 0 }: { refreshKey?: number }) {
   const [rows, setRows] = useState<EngineRow[]>([]);
-  // v21.0: extended ollama info (scan/deep/vision models + ctx + ramGuard)
-  const [ollama, setOllama] = useState<OllamaInfo | null>(null);
-  // v21.27: site-wide LOCAL/CLOUD mode + OpenCode cloud bridge
+  const [freeLlm, setFreeLlm] = useState<FreeLlmInfo | null>(null);
+  const [aiGuard, setAiGuard] = useState<AiGuardInfo | null>(null);
   const [mode, setMode] = useState<AiModeInfo | null>(null);
-  const [opencode, setOpencode] = useState<OpenCodeInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
+
+  const apply = useCallback((d: any) => {
+    if (Array.isArray(d?.engines)) { setRows(d.engines); setFailed(false); }
+    setFreeLlm(d?.freellmapi && typeof d.freellmapi === 'object' ? d.freellmapi : null);
+    setAiGuard(d?.aiGuard && typeof d.aiGuard === 'object' ? d.aiGuard : null);
+    const m = d?.mode;
+    setMode(m && (m.mode === 'smart' || m.mode === 'balanced' || m.mode === 'fast') ? m : null);
+  }, []);
 
   const load = useCallback(async () => {
     try {
       const res = await apiFetch('/api/ai/engines', { signal: AbortSignal.timeout(8000) });
       if (!res.ok) { setFailed(true); return; }
-      const d = await res.json().catch(() => ({}));
-      if (Array.isArray(d?.engines)) { setRows(d.engines); setFailed(false); }
-      // v21.0: extended ollama block (model/deep/vision/ctx/ramGuard)
-      setOllama(d?.ollama && typeof d.ollama === 'object' ? d.ollama : null);
-      const m = d?.mode;
-      setMode(m && (m.mode === 'local' || m.mode === 'cloud' || m.mode === 'both') ? m : null);
-      setOpencode(d?.opencode && typeof d.opencode === 'object' ? d.opencode : null);
+      apply(await res.json().catch(() => ({})));
     } catch { setFailed(true); /* silent — strip is auxiliary */ }
-  }, []);
+  }, [apply]);
 
   const recheck = useCallback(async () => {
     setBusy(true);
     try {
-      const res = await apiFetch('/api/ai/engines/recheck', { method: 'POST', signal: AbortSignal.timeout(15000) });
-      if (res.ok) {
-        const d = await res.json().catch(() => ({}));
-        if (Array.isArray(d?.engines)) setRows(d.engines);
-        if (d?.ollama && typeof d.ollama === 'object') setOllama(d.ollama);
-        const m = d?.mode;
-        setMode(m && (m.mode === 'local' || m.mode === 'cloud' || m.mode === 'both') ? m : null);
-        setOpencode(d?.opencode && typeof d.opencode === 'object' ? d.opencode : null);
-      }
+      const res = await apiFetch('/api/ai/engines/recheck', { method: 'POST', signal: AbortSignal.timeout(20000) });
+      if (res.ok) apply(await res.json().catch(() => ({})));
     } catch { /* silent */ } finally { setBusy(false); }
-  }, []);
+  }, [apply]);
 
   useEffect(() => {
     load();
-    // v20.2 D16: visibility-gated — hidden tab pe network poll band.
+    // Visibility-gated — hidden tab pe network poll band.
     const t = setInterval(() => { if (!document.hidden) load(); }, 30_000);
     return () => clearInterval(t);
   }, [load, refreshKey]);
 
-  if (!rows.length && !mode) return null;
+  if (!rows.length && !mode && !freeLlm) return null;
 
-  const ol = rows.find(e => e.provider === 'ollama');
-  const cloudRows = rows.filter(e => e.provider !== 'ollama');
-  const ocReady = !!opencode?.available && opencode?.loggedIn !== false;
+  const fl = rows.find(e => e.provider === 'freellmapi');
+  const fallbackRows = rows.filter(e => e.provider !== 'freellmapi');
+  const routerReady = !!freeLlm?.available;
 
   return (
     <div className="flex items-center gap-1.5 px-3 pb-2 flex-wrap">
-      <span className="flex items-center gap-1 text-[9px] font-black font-mono text-slate-500" title="AI language engine health — v18.7 sentinel. Offline engine auto-retry karta hai; RECHECK abhi try karta hai.">
+      <span className="flex items-center gap-1 text-[9px] font-black font-mono text-slate-500" title="AI engine health — FreeLLMAPI owns the provider keys. Offline router auto-retry karta hai; RECHECK abhi try karta hai.">
         <Zap size={10} /> AI ENGINES
       </span>
       {mode && (
         <span
-          className={`px-1.5 py-0.5 rounded-md text-[9px] font-mono font-bold border ${
-            mode.mode === 'both'
-              ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
-              : mode.mode === 'cloud'
-                ? 'bg-cyan-500/15 border-cyan-500/30 text-cyan-300'
-                : 'bg-violet-500/15 border-violet-500/30 text-violet-300'
-          }`}
+          className={`px-1.5 py-0.5 rounded-md text-[9px] font-mono font-bold border ${MODE_CLASS[mode.mode]}`}
           title={modeTip(mode)}
         >
-          {mode.mode.toUpperCase()} MODE
+          {mode.mode.toUpperCase()} PROFILE
         </span>
       )}
-      {opencode && (
+      {fl && (
         <span
-          className={`px-1.5 py-0.5 rounded-md text-[9px] font-mono font-bold border ${
-            mode?.mode === 'local'
-              ? 'bg-white/[0.02] border-white/10 text-slate-600'
-              : ocReady
-                ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
-                : 'bg-amber-500/15 border-amber-500/30 text-amber-300'
-          }`}
-          title={opencodeTip(opencode, ollama)}
+          className={`px-1.5 py-0.5 rounded-md text-[9px] font-mono font-bold border ${chipClass(fl)}`}
+          title={chipTitle(fl, freeLlm, aiGuard, mode)}
         >
-          OPENCODE {mode?.mode === 'local' ? 'STANDBY' : ocReady ? '✓' : opencode.available ? 'NO-AUTH' : 'OFF'}
+          {chipText(fl, freeLlm, mode)}
         </span>
       )}
-      {cloudRows.map(e => (
+      {fallbackRows.map(e => (
         <span
           key={e.provider}
           className={`px-1.5 py-0.5 rounded-md text-[9px] font-mono font-bold border ${chipClass(e)}`}
-          title={chipTitle(e, ollama)}
+          title={chipTitle(e, freeLlm, aiGuard, mode)}
         >
-          {chipText(e, ollama)}
+          {chipText(e, freeLlm, mode)}
         </span>
       ))}
-      {ol && (
-        <span
-          className={`px-1.5 py-0.5 rounded-md text-[9px] font-mono font-bold border ${chipClass(ol)}`}
-          title={chipTitle(ol, ollama)}
-        >
-          {chipText(ol, ollama)}
-        </span>
-      )}
       <button
         onClick={recheck}
         disabled={busy}
         className="ml-auto flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-black font-mono border border-cyan-500/30 bg-cyan-500/10 text-cyan-300 hover:border-cyan-400/60 hover:text-cyan-200 transition-all disabled:opacity-40"
-        title="cooldowns clear karo + local Ollama/OpenCode ko abhi dobara probe karo (half-open)"
+        title="cooldowns clear karo + FreeLLMAPI router ko abhi dobara probe karo (half-open)"
       >
         <RefreshCw size={9} className={busy ? 'animate-spin' : ''} /> {busy ? 'CHECKING…' : 'RECHECK'}
       </button>
-      {mode?.mode === 'local' && !ol?.configured && !failed && (
+      {!routerReady && !failed && (
         <span className="w-full text-[9px] text-amber-400/80 font-mono leading-relaxed pt-0.5">
-          LOCAL mode: Ollama reachable nahi — <b>ollama serve</b> chalao aur model pull karo (localhost:11434). Council/deep/validator tab tak deterministic rahenge. Paid cloud keys is mode me use nahi hoti.
-        </span>
-      )}
-      {mode?.mode === 'cloud' && !ocReady && !failed && (
-        <span className="w-full text-[9px] text-amber-400/80 font-mono leading-relaxed pt-0.5">
-          CLOUD mode: OpenCode ready nahi ({opencode?.lastError || 'CLI/login check karo'}) — har call Ollama fallback par jayegi{!ol?.configured ? ', aur Ollama bhi offline hai' : ''}. Paid APIs kabhi nahi try hote.
-        </span>
-      )}
-      {mode?.mode === 'both' && !ocReady && !failed && (
-        <span className="w-full text-[9px] text-amber-400/80 font-mono leading-relaxed pt-0.5">
-          BOTH mode: OpenCode ready nahi ({opencode?.lastError || 'CLI/login check karo'}) — abhi sirf local Ollama leg jawab dega (single-engine degrade), dono saath milte hain jab OpenCode online ho.
+          FreeLLMAPI router reachable nahi ({freeLlm?.lastError || 'desktop app band hai'}) — AI lanes deterministic rahenge jab tak router online nahi hota. Start karo: FreeLLMAPI desktop app (default <b>127.0.0.1:31415</b>) aur RECHECK dabao. Direct provider keys (agar set hain) fallback hain.
         </span>
       )}
     </div>

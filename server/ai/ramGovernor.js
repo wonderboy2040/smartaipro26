@@ -1,11 +1,12 @@
 // ============================================================
-// server/ai/ramGovernor.js — v20.6 LOCAL-FIRST RAM GOVERNOR
+// server/ai/ramGovernor.js — v20.6 RAM GOVERNOR
 // ------------------------------------------------------------
 // 16GB laptop setup: Windows + Chrome automation profile (CoinDCX +
-// Dhan + SmartAI tabs) + Node server + ml-service (Python) + Ollama
-// qwen3:8b all running locally. Without a governor, the Ollama
-// KV-cache + HF models (Chronos/FinBERT torch) can push the box
-// into swap → event-loop freezes (the very thing selfHeal flags).
+// Dhan + SmartAI tabs) + Node server + ml-service (Python) + the
+// FreeLLMAPI desktop router all running locally. Without a governor,
+// the local HF models (Chronos/FinBERT torch) + browser working sets
+// can push the box into swap → event-loop freezes (the very thing
+// selfHeal flags).
 //
 // Three-state traffic light:
 //   GREEN  (>3.5GB free)  — normal: LLM calls + entries both OK
@@ -131,7 +132,7 @@ function _tick() {
         const now = Date.now();
         _state.lastRedAlertAt = now;
         try {
-          _state._alertSink(`🚨 RAM GOVERNOR: RED — free ${_toGB(_state.freeMB)}GB / RSS ${_state.rssMB}MB. New auto-entries BLOCKED; existing positions managed. Ollama should be unloaded; HF models OFF.`);
+          _state._alertSink(`🚨 RAM GOVERNOR: RED — free ${_toGB(_state.freeMB)}GB / RSS ${_state.rssMB}MB. New auto-entries BLOCKED; existing positions managed. HF models OFF.`);
         } catch { /* alert best-effort */ }
       }
     }

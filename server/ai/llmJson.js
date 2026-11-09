@@ -1,10 +1,9 @@
 // ============================================================
 // server/ai/llmJson.js — shared LLM JSON extraction
 // ------------------------------------------------------------
-// Moved out of llmChain.js (v21.27) so opencodeBridge.js can use
-// tryParseJson() without importing llmChain.js. llmChain.js now
-// imports the OpenCode bridge for the CLOUD mode; keeping the
-// parser here breaks that import cycle instead of recreating it.
+// Moved out of llmChain.js so the FreeLLMAPI bridge can use
+// tryParseJson() without importing the chain and recreating an
+// import cycle. One parser for every AI lane.
 // ============================================================
 
 // v21.0 THINK-STRIP: R1/qwen3 reasoning blocks (concat-built, tooling-safe).
@@ -36,7 +35,7 @@ export function tryParseJson(text) {
   try { return JSON.parse(cleaned.slice(start, end + 1)); } catch { /* try repaired / balanced */ }
   try { return JSON.parse(repair(cleaned.slice(start, end + 1))); } catch { /* scan balanced from end */ }
   // v21.18.0: agar reasoning text me pehle koi stray '{' aaya ho, to aakhri
-  // balanced {...} JSON object ko reverse-scan se nikaalo — local Ollama
+  // balanced {...} JSON object ko reverse-scan se nikaalo - reasoning models
   // (deepseek-r1 / qwen3 / llama3) par 'no-json response' error zero!
   for (let i = cleaned.lastIndexOf('{'); i >= start; i = cleaned.lastIndexOf('{', i - 1)) {
     const slice = cleaned.slice(i, end + 1);

@@ -17,6 +17,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// Full-suite workers can be I/O-stalled; these are unit contracts, not
+// latency tests. 30s keeps them deterministic without hiding a real hang.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
+
 // hermetic data dir (same trick as the other suites)
 process.env.SMARTAI_DATA_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '../.test-data-v213');
 
@@ -327,6 +331,18 @@ describe('v21.3.0 Issue-5 — TOP-5 excludes AI-CONFLICT signals', () => {
 // Issue-4: one-click live execute pre-flight
 // ============================================================
 describe('v21.3.0 Issue-4 — futuresExecutePrecheck (dry-run gauntlet + ticket)', () => {
+  // HERMETIC: the precheck sizes the ticket from two live reads (USD/INR and
+  // the CoinDCX instrument row). A dark/slow network used to spend the whole
+  // test budget in those fetches. Fail them fast — the documented fallbacks
+  // (last-known FX + guessed precision) are exactly what this ticket test
+  // asserts.
+  beforeEach(() => {
+    vi.stubGlobal('fetch', async () => new Response('{}', { status: 503 }));
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('returns the gate list + would-be ticket WITHOUT placing an order', async () => {
     const out = await futuresExecutePrecheck({
       symbol: 'BTC', side: 'LONG',

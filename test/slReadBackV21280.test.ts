@@ -12,7 +12,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { slReadBackMatches } from '../server/ai/futures.js';
 
-const SRC = fs.readFileSync(path.resolve('server/ai/futures.js'), 'utf8');
+// Normalize CRLF: the source-contract slices below match on '\n' boundaries.
+const SRC = fs.readFileSync(path.resolve('server/ai/futures.js'), 'utf8').replace(/\r\n/g, '\n');
 
 describe('v21.28.0 F5 — SL read-back match (pure)', () => {
   it('exact and sub-0.05% exchange rounding match', () => {

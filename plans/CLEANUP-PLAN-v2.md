@@ -1,5 +1,9 @@
 # SmartAI Pro v21.35.7 — Cleanup Plan v2 (CODE-VERIFIED)
 
+> **ARCHIVED plan.** The AI-lane section below predates the v22.0 FreeLLMAPI
+> migration; its "local engine trio" notes now refer to the FreeLLMAPI AI
+> guard (`aiGuard`). Current architecture: `docs/CHANGES.md` v22.0.0.
+
 **Base:** your diagram-only `CLEANUP` plan (Sections 1–8).
 **What I added:** I have code access (I built the blueprint from it), so I closed the "verify karo" gap on every load-bearing claim. Section 0 below is the **verified delta** — findings that flipped from *Medium/Low confidence* to **CONFIRMED / REFUTED with file:line**. The rest of your plan stands; I've re-prioritized it using the evidence.
 
@@ -41,14 +45,14 @@ The plan assumed `executeSignal` was *the* primitive to funnel into, and worried
 - The **auto live path uses a 5th primitive: `executeMtfDualLiveOrder`** (futures.js:2624), reached via `routes.js:1794 liveExecute → executeMtfDualLiveOrder`. This is what placed the LINK/BNB/WLD trades this session.
 - **It already enforces a strong ladder on its own:** order idempotency (R1, `claimAction`/`finishAction`), a 1-session-1-trade in-flight lock, `killSwitch`, credential check. **So there is no gate-free back door into live CoinDCX futures.** Your R-03 "gates sirf mtfAutoLink par lagte hain — manual/telegram bypass kar sakte hain" is **overstated.**
 - What actually *is* true: **5 live-order primitives, each with its own copy of a gate ladder** (`executeSignal`, `executeFuturesSignal`, `executeGlobalSignal`, `executeMtfDualLiveOrder`, `executeIndiaSignal`). The risk is **divergence** (two ladders drift, one gains a kill the other misses), not "any path skips all checks."
-- **The real, narrower gap you should target:** the three **entry-quality gates** (`entryGates.js` MC-odds / breakout / late-wave) and Ollama direction-verification are enforced **upstream in `mtfAutoLink` candidate selection**, *not inside* `executeMtfDualLiveOrder`. So a manual/telegram call that reaches `executeMtfDualLiveOrder` directly **skips the entry gates.** That's the actual P2.3/P2.4 surface.
+- **The real, narrower gap you should target:** the three **entry-quality gates** (`entryGates.js` MC-odds / breakout / late-wave) and local engine direction-verification are enforced **upstream in `mtfAutoLink` candidate selection**, *not inside* `executeMtfDualLiveOrder`. So a manual/telegram call that reaches `executeMtfDualLiveOrder` directly **skips the entry gates.** That's the actual P2.3/P2.4 surface.
 
 **Net:** P2.3's goal (single `placeLiveOrder` choke point) is still worth doing, but framed as *"consolidate 5 primitives + move entry-gates into the shared primitive"* — not *"stop a bypass that doesn't exist."*
 
 ### V-4 · R-02 direction-verification not in commit → **HALF-REFUTED**
 - The **deterministic** direction certificate (`directionCertificate.js` → `buildDirectionCertificate`) **IS a hard commit-block** in the auto path: `mtfAutoLink.js:1185,1200` — `if (!directionCertificate.ok)` → no action, polarity-invert hard-block. So "direction-verification advisory, wrong-direction trade not stopped" is **wrong for the deterministic cert** — it blocks.
-- The **Ollama trio** is the genuinely-advisory part (fire-and-forget, 30s cache, does not gate the commit) — your instinct there is **correct** (D-04/U-11/P3.9 stand).
-- **P2.4 therefore narrows to:** keep the deterministic cert blocking (it already is); decide what to do with the Ollama trio only. Don't rebuild a blocking gate that already exists.
+- The **local engine trio** is the genuinely-advisory part (fire-and-forget, 30s cache, does not gate the commit) — your instinct there is **correct** (D-04/U-11/P3.9 stand).
+- **P2.4 therefore narrows to:** keep the deterministic cert blocking (it already is); decide what to do with the local engine trio only. Don't rebuild a blocking gate that already exists.
 
 ### V-5 · U-07 ml-service "not in blueprint, so dead" → **REFUTED**
 `ml-service` / onnx is referenced across `ensemble.js`, `expertPicks.js`, `expertMode.js`, `mlHealth.js`, `models.js`, `outcomeHarvester.js`, `ramGovernor.js`. `expertPicks.js` is a live 10-model engine, not dead code. **It is wired; the question is only whether the *process* is currently running** — `mlHealth.js` probes it. **Do not delete expertPicks on a diagram guess.** (Your own "Low/Medium — verify" label was the right one; the code refutes the "silently empty" worry. Keep it pending a P1 process audit.)
@@ -67,7 +71,7 @@ Your original order was: *P2 safety → P1 instrument → P3 dedupe.* With the c
 
 1. **P2.1 live-floor schema (V-1)** — hard gate before ANY re-arm of `enabled:true`. Highest-leverage single change.
 2. **P2.5 secrets → `.env` only (V-2)** — and stop the `saveJSON('mcp-coindcx.json',{apiKey,secret})` re-persist in futures.js.
-3. **P2.3/P2.4 execution consolidation (V-3, V-4)** — now scoped precisely: (a) consolidate the 5 live primitives onto one choke point, (b) move the 3 entry-gates + deterministic cert check *into* that choke point so manual/telegram/agent calls can't skip them, (c) drop the Ollama trio from the commit path (keep advisory or remove per P3.9).
+3. **P2.3/P2.4 execution consolidation (V-3, V-4)** — now scoped precisely: (a) consolidate the 5 live primitives onto one choke point, (b) move the 3 entry-gates + deterministic cert check *into* that choke point so manual/telegram/agent calls can't skip them, (c) drop the local engine trio from the commit path (keep advisory or remove per P3.9).
 4. **P1 instrumentation** — you need the 7-day route hits *before* touching U-01/U-03/U-04/U-08/U-09. But **skip V-5/V-7 in the delete list** until the process audit says otherwise.
 5. **P3 dedupe** — with D-01 downgraded and D-06 reframed, the safe-quick wins are D-02 (paper), D-09/D-10 (journals/config), D-11 (backtest), D-12 (SSE).
 
@@ -108,12 +112,12 @@ Fixed-candle fixtures for all 19 CRYPTO symbols → record `{score, direction, t
 | ID | Verified finding | Status |
 |---|---|---|
 | R-01 | floor 50 + tradeAll + 8 conc + `executionMode:live`, `enabled:false` → live WATCH-tier money on re-arm | **CONFIRMED / dormant** |
-| R-02 | deterministic direction cert **already hard-blocks** commit (mtfAutoLink:1185/1200); only Ollama trio is advisory | **HALF-REFUTED** |
+| R-02 | deterministic direction cert **already hard-blocks** commit (mtfAutoLink:1185/1200); only local engine trio is advisory | **HALF-REFUTED** |
 | R-03 | no gate-free live path; 5 primitives each carry kill-switch/idempotency; real gap = entry-gates not in the shared primitive | **REFRAMED** |
 | R-04 | `mcp-coindcx.json` plaintext 48+64-char key/secret on disk; folder is **not git, no .gitignore**; code re-persists keys after first trade | **CONFIRMED, worse** |
 | R-06 | JSON concurrency (3s trail + 8 trades + writers) — your `writeJsonAtomic` fix stands; add it to `mcp-coindcx.json` too | **CONFIRMED** |
 
-Keep your R-05 (runtime `npm install` in supervisor), R-07 (supervision gap: bot + Ollama + ml-service unsupervised), R-08 (version-pinned cert must re-pin on 21.36).
+Keep your R-05 (runtime `npm install` in supervisor), R-07 (supervision gap: bot + local engine + ml-service unsupervised), R-08 (version-pinned cert must re-pin on 21.36).
 
 ---
 
@@ -122,7 +126,7 @@ Keep your R-05 (runtime `npm install` in supervisor), R-07 (supervision gap: bot
 Your Section 7 had 8 open questions. Code resolves two:
 
 - **Q6 `tapetide`** and **Q3 "does Bot Lab use US data"** → still need your input (no code answer).
-- **Q5 Ollama trio** → code confirms it's *already* advisory (V-4), so the real choice is only *"keep advisory vs remove."* Removing is cleaner on a 16GB host; keep only if shadow data shows it changes outcomes.
+- **Q5 local engine trio** → code confirms it's *already* advisory (V-4), so the real choice is only *"keep advisory vs remove."* Removing is cleaner on a 16GB host; keep only if shadow data shows it changes outcomes.
 - **Q1 live floor** → code confirms current = 50 (V-1). If you say "no live WATCH trades," P2.1 floors it at 65 (ACTION) as you suggested; the schema will *enforce* it.
 
 ---

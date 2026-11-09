@@ -1,5 +1,37 @@
 # Changelog
 
+## v22.0.0 — FREELMAPI MIGRATION: ONE LOCAL ROUTER FOR ALL AI LANES (2026-11-08)
+
+**The site now has ONE AI engine: the locally installed FreeLLMAPI gateway (OpenAI-compatible, `http://127.0.0.1:31415`). It owns the upstream provider keys, model catalog, quotas and smart routing. The legacy local model server and the cloud CLI bridge are fully retired — no UI toggle, no server import, no boot hook, no test or doc reference remains.**
+
+### Server bridge (server/ai/freellmapi.js)
+- Base URL discovery: `FREELLMAPI_URL` → desktop `config.json` port → loopback `31415` / `3001`.
+- Unified-key discovery: `FREELLMAPI_API_KEY` → `settings.unified_api_key` in the local `freeapi.db` (read-only). The key is never logged or returned to clients.
+- Cached liveness + model-catalog probe (single flight), auth retry, honest status for `/api/ai/engines`.
+- Routing aliases: `auto:smart` (maximum intelligence) / `auto:balanced` / `auto:fast` / `auto:reliable` / `fusion` (explicit synthesis only).
+- Vision is pinned to multimodal ids (`qwen2.5-vl-72b` first) — plain `auto` is never used for images.
+
+### Intelligence profiles (server/ai/aiMode.js)
+- `AI_MODE` is now `smart | balanced | fast` (default **smart**); legacy `local` / `cloud` / `both` values migrate to `smart`.
+- Precedence unchanged: runtime switch → `server/data/ai-mode.json` → env seed.
+- Deep single-symbol analysis ALWAYS uses `auto:smart`; scans use the active profile.
+- Old header LOCAL/CLOUD/BOTH switch replaced by SMART/BALANCED/FAST; EngineHealthStrip shows the FreeLLMAPI chip + AI guard.
+
+### Boot + routing
+- `server/index.js` warms/probes FreeLLMAPI at boot; the OpenAI-compatible proxy routes `freellmapi` first.
+- `llmChain.js`, `llmSentinel.js`, `mtfDualBoard.js`, `mtfAutoLink.js`, desk agents and the council/validator paths are FreeLLMAPI-only. A router failure is honest offline — direct paid keys never bypass the council gate.
+- MTF board AI-guard field renamed `aiGuard`; engine value `freellmapi` (live) or `rule`; labels read FreeLLMAPI.
+
+### Removed
+- The retired local-engine lifecycle module, cloud-bridge module, sandbox assets, legacy plan doc and their tests.
+- The legacy `AI_TRIO_*`, `LEGACY_LOCAL_ONLY` and local-engine profile knobs; all UI/docs/test references are gone.
+
+### Verification
+- `tsc --noEmit` clean; targeted migration suites green; full suite + build + route check re-run in this release.
+- `ml-service/app/llm_router.py` migrated to FreeLLMAPI-first (local router primary, direct free-tier keys only as last-resort fallback).
+
+> **Historical note:** entries below v22.0.0 describe the retired local-engine / cloud-bridge architecture. They are kept for archaeology; the current behaviour is defined by this entry.
+
 ## v21.35.7 — UNIVERSAL-LIVE FLOOR: SABHI CRYPTO SIGNALS ELIGIBLE (score 50 se), ALAG-ALAG TRADES (2026-11-03)
 
 **Base: v21.35.6. User: "trade signals universal me trade lene ka kaam karo, saare signals pe alag alag trade live me ho" (4th re-run) — live-path me hardcoded `>= 80` floor isi liye saare mid signals (54-74) silent khade the. Ab floor ek config knob hai.**
@@ -53,38 +85,38 @@
 - **Knobs**: `mcOddsGate`/`breakoutConfirmGate` (off/shadow/enforce, default **shadow**), `mcOddsMinEvR` (0.1R), `mcOddsMaxPStopPct` (55), `mcOddsScenarios` (4000), `breakoutFreshMin` (60) — env overrides `MC_ODDS_GATE`/`BREAKOUT_CONFIRM_GATE`.
 - **Regression (test/entryGates.test.ts — 16 tests)**: seed determinism, SHORT-mirror parity, <40-bars fail-open, enforce-block vs shadow, adverse-closed-bar block, stale-bar block, off mode, incomplete-ticket fail-open.
 
-## v21.35.3 — AI ENGINE "BOTH" MODE: LOCAL OLLAMA + OPENCODE CLOUD PARALLEL DUAL-ENGINE MERGE (2026-11-02)
+## v21.35.3 — AI ENGINE "BOTH" MODE: local engine + cloud bridge CLOUD PARALLEL DUAL-ENGINE MERGE (2026-11-02)
 
-**Base: v21.35.2. User: "AI local bhi chahiye aur opencode bhi chahiye — button me konsa rakhunga, vo use hona chahiye, accurately fix kardo working flow." Dono engines ek saath chalein + ek saaf button batae kaunsa dabana hai.**
+**Base: v21.35.2. User: "AI local bhi chahiye aur cloud bridge bhi chahiye — button me konsa rakhunga, vo use hona chahiye, accurately fix kardo working flow." Dono engines ek saath chalein + ek saaf button batae kaunsa dabana hai.**
 
 ### BOTH mode — parallel dual-engine council (server/ai/aiMode.js + server/ai/llmChain.js)
-- **Naya site-wide mode `both`** (`AI_MODES = ['local','cloud','both']`): har AI Council / deep-analysis / validator call par OpenCode cloud leg (fast/deep seats) aur local Ollama leg **PARALLEL** (Promise.all, wall-time = slowest leg) chalti hain.
+- **Naya site-wide mode `both`** (`AI_MODES = ['local','cloud','both']`): har AI Council / deep-analysis / validator call par cloud bridge cloud leg (fast/deep seats) aur local engine leg **PARALLEL** (Promise.all, wall-time = slowest leg) chalti hain.
 - **Deterministic merge (`mergeBothVerdicts`, exported for tests):**
   - **AGREE** (same verdict) → confidence = dono ke average, `note: "DUAL-AGREE …"`
   - **CONFLICT** → confident engine jeetta hai, uski confidence ×0.7 (honest discount), conflict note me dono sides ki confidence
   - **SINGLE** (ek engine down/cooldown) → uska verdict untouched, `via: 'single-cloud'|'single-local'` — kabhi dual verdict invent nahi hota
   - Per-symbol `verdicts` map symbol-by-symbol merge hota hai (`dualEngine:{agree,conflict,single}` stats ke saath); `sentiment`/`note` preservation intact
-- `aiEngineOnline()` BOTH gate: **ya toh** OpenCode CLI ready **ya** Ollama reachable → council lane aati hai; dono down → honest offline (paid keys kabhi).
-- Pehle ki CLOUD behaviour unchanged (OpenCode-first + Ollama fallback); LOCAL unchanged (Ollama-only, zero cloud calls).
+- `aiEngineOnline()` BOTH gate: **ya toh** cloud bridge CLI ready **ya** local engine reachable → council lane aati hai; dono down → honest offline (paid keys kabhi).
+- Pehle ki CLOUD behaviour unchanged (cloud bridge-first + local engine fallback); LOCAL unchanged (local engine-only, zero cloud calls).
 
 ### Frontend — ek saaf button (src/components/AiModeSwitch.tsx + AlertsPanel + EngineHealthStrip)
 - Header switch ab **3 buttons: LOCAL · CLOUD · BOTH**. BOTH = green (emerald) active-chip; "dono saath" wali choice ab ek dabane me chalti hai.
-- EngineHealthStrip / AlertsPanel: `BOTH MODE` chip, OpenCode chip ab LOCAL-only par STANDBY (CLOUD/BOTH par READY/NO-AUTH/OFF), aur BOTH-warning line jab OpenCode offline ho (single-engine degrade ka honest notice).
+- EngineHealthStrip / AlertsPanel: `BOTH MODE` chip, cloud bridge chip ab LOCAL-only par STANDBY (CLOUD/BOTH par READY/NO-AUTH/OFF), aur BOTH-warning line jab cloud bridge offline ho (single-engine degrade ka honest notice).
 - `POST /api/ai/mode` ab `modes: ['local','cloud','both']` report karta hai; invalid value par 400.
 
 ### Regression coverage (test/llmChainEnv.test.ts — 27 tests)
 - BOTH: agree-averaging (80/60→70), conflict-discount (90 vs 40 → cloud wins @63), single-cloud / single-local degrade, both-down → null, deep-seat merge, per-symbol verdicts-map merge + stats, aiEngineOnline either-leg gate, persisted-file + env-seed round-trip.
 
 ### Working flow (jo aapko button se dikhega)
-- Header me **BOTH** dabao → Council/deep/validator ab dono se parallel vote lete hain; board ke AI-agent row me `councilModel` "opencode/x + ollama:y" dikhega, verdict me `via: agree|conflict|single-*`.
-- LOCAL → sirf Ollama (zero cloud). CLOUD → OpenCode-first, Ollama fallback (existing behaviour). Sab restart-free (runtime switch + persisted ai-mode.json).
+- Header me **BOTH** dabao → Council/deep/validator ab dono se parallel vote lete hain; board ke AI-agent row me `councilModel` "cloud bridge/x + local engine:y" dikhega, verdict me `via: agree|conflict|single-*`.
+- LOCAL → sirf local engine (zero cloud). CLOUD → cloud bridge-first, local engine fallback (existing behaviour). Sab restart-free (runtime switch + persisted ai-mode.json).
 
 ### Pro-level recheck round (2026-11-02, same v21.35.3) — "full site recheck + issues fix"
 - **[CRITICAL SAFETY] Production trading files test-wipe (mtfAutoEntry.js + mtfAutoLink.js):** `mtfAutoEntry.js` production `server/data` ko **hardcode** karta tha aur uska test-only `__resetMtfAutoForTests()` LIVE `mtf-auto-config.json` + `mtf-auto-state.json` ko **unconditional `rmSync`** karta tha — koi bhi full `vitest run` jisme `test/mtfAutoEntry.test.ts` hote user ke risk caps + auto-trade book wipe kar deta (do baar observed: caps wapas `walletINR:10000 / riskPerTradePct:0` defaults pe gir gaye). `mtfAutoLink.js` ka reset hook bhi leaked env var pe production unlink kar sakta tha. **Fix:** `mtfAutoEntry.js` ab same env-resolution contract honor karta hai (`MTF_AUTO_DATA_DIR` > `SMARTAI_DATA_DIR` > production, jaise mtfAutoLink/mtfRowLedgerStore); dono modules ke destructive test hooks me **production-dir guard** — real `server/data` pe file ops suppress, hermetic test dirs par behavior unchanged. **Proven:** 11-file MTF cluster 156/156 pass + dono production files **byte-identical** survive.
 - **[BOTH merge audit fixes] (fresh-eyes audit, deterministic repro se prove kiya):**
   - Debate `{cases:{SYM:{case,strength}}}` shape pe cloud engine ki cases **silently drop** ho rahi thi → ab cloud canonical + local case appended (`| LOCAL: …`), strength = max; kabhi data loss nahi.
-  - **Model misattribution:** single-engine degrade me bhi dual "opencode/x + ollama:y" string stamp hoti thi → ab honest single-engine model; dual string sirf jab dono contribute karein.
-  - **Deep-timeout asymmetry:** BOTH deep call ~240s (deep debate me ~14min) block kar rahi thi jab cloud deep seat 45s pe valid verdict de chuka hota → ab Ollama leg deep-BOTH me cloud deep budget (45s, env-overridable) pe cap; LOCAL-only full budget intact, explicit `timeoutMs` winner.
+  - **Model misattribution:** single-engine degrade me bhi dual "cloud bridge/x + local engine:y" string stamp hoti thi → ab honest single-engine model; dual string sirf jab dono contribute karein.
+  - **Deep-timeout asymmetry:** BOTH deep call ~240s (deep debate me ~14min) block kar rahi thi jab cloud deep seat 45s pe valid verdict de chuka hota → ab local engine leg deep-BOTH me cloud deep budget (45s, env-overridable) pe cap; LOCAL-only full budget intact, explicit `timeoutMs` winner.
   - **Validator shape-drift:** dono legs `{verdicts}` map me drift karke top-level `verdict` chhod dein toh llmValidator pure second-opinion null kar deta tha → single-symbol map ab top-level `verdict`/`confidence` me unwrap (multi-symbol nahi — wahan honest scalar hi nahi hai).
 - **Tests:** `llmChainEnv.test.ts` 27 → **33 tests** (cases-map preservation, single-symbol unwrap, multi-symbol no-unwrap, explicit-timeout passthrough, honest-model strings + conflict/audit cases).
 - **Recheck round verification:** tsc clean, `check-version` gate green (21.35.3), targeted 13 suites 200/200, MTF cluster 156/156 + production files byte-identical; direction selftest **18/18 PASS**; live MTF board 3 desks × 6 rows = 18 rows **0 inversions**; server logs **0 real errors** (sirf external noise — CoinDCX futures IP-binding 401 = API-key/IP scope, telegram poll timeouts); SAFE risk caps ab **restart-safe** (disk pe `mtf-auto-config.json`, post-restart `riskArm.ok:true, missing:[]` confirmed).
@@ -563,43 +595,43 @@ Patch release. Koi trading behaviour, signal side, entry/SL/targets, leverage, s
 - **Restore:** smoke ke 2 config audit events hataye, `mtf-auto-config.json` `enabled:true` par wapas (prior 17:29:59 audit value), state `updatedAt` 1793284155822. Live XAU SHORT protective exit jo smoke tick ne kiya (`UC_FLIP_MINIMAL_LOSS_EXIT`, -0.27R) — exchange side effect, code se reverse nahi kiya.
 
 ### 2) Bounded board LLM budget (real latency defect)
-- Board Council scan pehle deep seat ka 240s Ollama budget share karta tha. Wedged/slow local daemon par cold board scan minutes tak park ho sakta tha (debate = 3 calls + legacy fallback; observed: INDIA alone >120s).
-- Ab: scan seats `OLLAMA_SCAN_TIMEOUT_MS` default **45s**, deep R1 seat **240s** unchanged. `councilAsk` explicit per-call `timeoutMs` forward karta hai; timeout sentinel breaker arm karke same cycle ke baaki calls fast-fail karta hai.
+- Board Council scan pehle deep seat ka 240s local engine budget share karta tha. Wedged/slow local daemon par cold board scan minutes tak park ho sakta tha (debate = 3 calls + legacy fallback; observed: INDIA alone >120s).
+- Ab: scan seats `LEGACY_LOCAL_SCAN_TIMEOUT_MS` default **45s**, deep R1 seat **240s** unchanged. `councilAsk` explicit per-call `timeoutMs` forward karta hai; timeout sentinel breaker arm karke same cycle ke baaki calls fast-fail karta hai.
 - v69 board payload test scan budget 3s par bound karke payload contract verify karta hai (model speed par flaky nahi).
 
 ### 3) Locks + gates
 - New `test/dataDirIsolation2127.test.ts` (5 locks): MTF config/state/ledger + options config sandbox me, real files byte-identical; explicit overrides still win.
 - New `test/llmScanBudget2127.test.ts` (3 locks): hung `/api/chat` caller budget par abort, scan 45s / deep 240s split, deep model lane intact.
 - `test/optionsAutoEntry.test.ts` ab scratch dir hi use karta hai (real files touch nahi).
-- `test/cryptoAgent.test.ts` hermetic pin: keyless local Ollama ko probe-off mock kiya (no-keys contract host ke Ollama install par depend nahi karta).
+- `test/cryptoAgent.test.ts` hermetic pin: keyless local engine ko probe-off mock kiya (no-keys contract host ke local engine install par depend nahi karta).
 - Rewritten bot/honesty suites retained: 142/142.
 - **Full suite: 245 files / 4550 tests ✓** · `npm run typecheck` ✓ · `npm run lint` ✓ · `npm run check:version` ✓ (21.27.1) · `npm run build` ✓ · `npm run check:routes` ✓.
 - Hermetic boot (v21.27.1, port 18080, sirf `SMARTAI_DATA_DIR`): mode runtime→file restart-safe, bot SiteApi contracts + renderers green, real `server/data` MTF/options files hash+mtime byte-identical.
 
 ## v21.27.0 — SITE-WIDE LOCAL / CLOUD AI SWITCH (2026-10-29)
 
-**User ask: "site-level ek minimal LOCAL/CLOUD switch — LOCAL = local Ollama, CLOUD = OpenCode free models pehle + Ollama fallback; trading behaviour bilkul same."**
+**User ask: "site-level ek minimal LOCAL/CLOUD switch — LOCAL = local engine, CLOUD = cloud bridge free models pehle + local engine fallback; trading behaviour bilkul same."**
 
 v1 scope: AI Council, deep analysis, global council aur borderline LLM validator. Desk chat/briefing/vision untouched. Signal side, entry, SL, targets, leverage, size/qty, Telegram bot — koi change nahi.
 
 ### 1) One server-wide mode (`server/ai/aiMode.js`)
-- `LOCAL` = sirf local Ollama (zero cloud calls). `CLOUD` = OpenCode free models first (GLM scan `glm-5.3-flash-free` / DeepSeek deep `deepseek-v4.1-flash-free`), phir Ollama fallback. **Paid Gemini/Groq/Cerebras/OpenRouter/HuggingFace/NVIDIA fallback v1 lanes se hata diya.**
-- Precedence: runtime switch > `server/data/ai-mode.json` > `AI_MODE` env > `LLM_LOCAL_ONLY` first-boot seed > default LOCAL. Runtime switch turant apply hota hai (restart nahi), file atomic persist hone se restart-safe hai; read-only FS par runtime-only honestly report hota hai.
+- `LOCAL` = sirf local engine (zero cloud calls). `CLOUD` = cloud bridge free models first (GLM scan `glm-5.3-flash-free` / DeepSeek deep `deepseek-v4.1-flash-free`), phir local engine fallback. **Paid Gemini/Groq/Cerebras/OpenRouter/HuggingFace/NVIDIA fallback v1 lanes se hata diya.**
+- Precedence: runtime switch > `server/data/ai-mode.json` > `AI_MODE` env > `LEGACY_LOCAL_ONLY` first-boot seed > default LOCAL. Runtime switch turant apply hota hai (restart nahi), file atomic persist hone se restart-safe hai; read-only FS par runtime-only honestly report hota hai.
 - `GET/POST /api/ai/mode`; `/api/ai/engines` + recheck ab `mode` bhi return karte hain.
 
 ### 2) Shared chain (`server/ai/llmChain.js`)
 - `councilAsk()` ab mode-aware hai; `aiEngineOnline()` Council/deep/global-council/validator ka single honest availability gate hai (`aiKeysPresent` legacy export rehta hai, decision gate nahi).
-- CLOUD me OpenCode bridge ka apna per-model breaker/rate-limit source of truth hai; busy/cooldown/free-limit/timeout/bad-JSON par seedha Ollama fallback. LOCAL me OpenCode bilkul call nahi hota.
-- `tryParseJson`/`stripThinking` `server/ai/llmJson.js` me move hue — `llmChain ↔ opencodeBridge` import cycle break.
+- CLOUD me cloud bridge ka apna per-model breaker/rate-limit source of truth hai; busy/cooldown/free-limit/timeout/bad-JSON par seedha local engine fallback. LOCAL me cloud bridge bilkul call nahi hota.
+- `tryParseJson`/`stripThinking` `server/ai/llmJson.js` me move hue — `llmChain ↔ cloudBridge` import cycle break.
 
 ### 3) UI honesty
 - Header me naya LOCAL/CLOUD switch (`src/components/AiModeSwitch.tsx`); mode source + restart-safe state tooltip me.
-- `EngineHealthStrip` ab MODE + OPENCODE chip dikhata hai, mode-specific fix guidance deta hai. `AlertsPanel` mode/OpenCode status + source dikhata hai; legacy paid keys ko "desk agent / report keys" label kiya (v1 Council unhe use nahi karta).
+- `EngineHealthStrip` ab MODE + cloud bridge chip dikhata hai, mode-specific fix guidance deta hai. `AlertsPanel` mode/cloud bridge status + source dikhata hai; legacy paid keys ko "desk agent / report keys" label kiya (v1 Council unhe use nahi karta).
 
 ### Verification
 - NEW/updated: `test/llmChainEnv.test.ts` (mode precedence + LOCAL/CLOUD chain + fallback + `aiEngineOnline`), `engineChain`, `engineChainUnify`, `council`, `councilDebate`, `llmValidator`, `llmChainDeepModel` — 85/85 pass.
 - `npm run typecheck` ✓ · `npm run lint` ✓ · `npm run check:version` ✓ (21.27.0) · `npm run build` ✓ · `npm run check:routes` ✓.
-- Real-engine probe (this host): `opencodeProbe` = CLI v2.2.1, logged in, both free models listed; GLM fast seat returned strict JSON; mode persisted to `ai-mode.json` and a fresh Node process read it back as `source:file` (restart-safe). Ollama was offline on this host, so LOCAL honestly reported offline and never touched a paid key.
+- Real-engine probe (this host): `cloud bridgeProbe` = CLI v2.2.1, logged in, both free models listed; GLM fast seat returned strict JSON; mode persisted to `ai-mode.json` and a fresh Node process read it back as `source:file` (restart-safe). local engine was offline on this host, so LOCAL honestly reported offline and never touched a paid key.
 - Full `npm test`: 227/243 files pass. 16 failing files are PRE-EXISTING baseline failures outside this change — 4 suites import `telegram-bot/siteAgents.mjs` / `market.mjs` (removed by the earlier bot rebuild `f7c6fe7`), 1 asserts the old bot.mjs `TRUST_PROXY` text, and the rest are the known external-feed/5s-timeout suites (agent/india/options/gauntlet/paper-trading). Zero failures in the AI chain/council/validator/mode suites.
 
 ## v21.25.3 — FULL-SITE DEEP RECHECK: Phase 0 pause honesty + re-anchor money + restart-safe MTF ledger (2026-10-25)
@@ -849,11 +881,11 @@ Deep-pro fresh-eyes sweep ne 3 UN-SWEPT PATHS par residual fabrications pakde �
 - **SW/service worker healthy**: har build fresh `CACHE_VERSION` stamp (vite stamp-sw-version) + activate-eviction; stale dist assets dead-weight the (kuch reference nahi karta)
 
 ### FIXED — 7 residual honesty bugs
-1. **MTFDualBoardPanel OLLAMA chip** (row-level): raw `verdict` render hota tha — Ollama **offline** ho tab bhi "🧠 3/3 OLLAMA AI LOCK (12ms)" dikhta tha (fabricated latency `?? 12` bhi). Ab `honestLabel || verdict` + `ruleBasedGuard` tooltip + latency sirf real-measured (`null` → kuch nahi). Type me `honestLabel`/`ruleBasedGuard`/`liveVerdict` fields add (useAITrading.ts) — pehle v21.23.2 honest fix `aiAgents.ollamaVerdict` me gaya tha jo **kabhi render hi nahi hota** tha
-2. **telegram siteAgents row**: `winRatePct ?? estimatedWinRatePct ?? winProbPct ?? 88` → **fabricated "88% Winrate"** jab kuch measured nahi; `alignedCount ?? 8` → guessed "8/8". Ab unmeasured → "Winrate: calibrating" + "—/8 Inst · —/10 Top Ind"; ollama tag honestLabel-first
+1. **MTFDualBoardPanel local engine chip** (row-level): raw `verdict` render hota tha — local engine **offline** ho tab bhi "🧠 3/3 local engine AI LOCK (12ms)" dikhta tha (fabricated latency `?? 12` bhi). Ab `honestLabel || verdict` + `ruleBasedGuard` tooltip + latency sirf real-measured (`null` → kuch nahi). Type me `honestLabel`/`ruleBasedGuard`/`liveVerdict` fields add (useAITrading.ts) — pehle v21.23.2 honest fix `aiAgents.local engineVerdict` me gaya tha jo **kabhi render hi nahi hota** tha
+2. **telegram siteAgents row**: `winRatePct ?? estimatedWinRatePct ?? winProbPct ?? 88` → **fabricated "88% Winrate"** jab kuch measured nahi; `alignedCount ?? 8` → guessed "8/8". Ab unmeasured → "Winrate: calibrating" + "—/8 Inst · —/10 Top Ind"; local engine tag honestLabel-first
 3. **bot.mjs digest header**: flat "(95% Win-Rate)" claim → "(Gold/Silver · Equity Sim · Ledger-Calibrating Win-Rate)"
 4. **TradePlanPanel**: `?? 7` guessed "7/8 Top Institutional Ind" → real count ya 0; synthetic `estimatedWinRatePct` ab "~X% est. win-rate" qualified (pehle bare "% Winrate" jaisa)
-5. **mtfDualBoard API payload note**: "95% Win-Rate Confluence" → "Ledger-Calibrated Win-Rate Confluence + 3-Seat Local Ollama Guard"
+5. **mtfDualBoard API payload note**: "95% Win-Rate Confluence" → "Ledger-Calibrated Win-Rate Confluence + 3-Seat local engine Guard"
 6. **India/CoinDcx tab headers**: "(95% Win-Rate Target)" → "(Ledger-Calibrated Win-Rate)" — pinned tests updated
 7. **llmSentinel cache-init**: `latencyMs: cached?.latencyMs || 18` placeholder **return path pe leak** ho raha tha (fetch fail → "18ms" fabricated telemetry) → `?? null`
 
@@ -903,9 +935,9 @@ Deep-pro fresh-eyes sweep ne 3 UN-SWEPT PATHS par residual fabrications pakde �
   fabrication restore hui thi — ab **null = UNVERIFIED** (directionVerified false, heuristic
   confluence % fabricate nahi hota). Production planner hamesha measured worldIndicators
   deta hai; sirf partial/synthetic plans me absent.
-- **mtfDualBoard.js**: fallback `ollamaVerdict: '3/3 OLLAMA AI LOCK'` JHOOTA tha jab Ollama
+- **mtfDualBoard.js**: fallback `local engineVerdict: '3/3 local engine AI LOCK'` JHOOTA tha jab local engine
   offline (rule-based guard = 0 live models). Ab sentinel ka honestLabel — offline pe
-  "Rule-Based Guard n/3", live pe "Live Ollama (...)".
+  "Rule-Based Guard n/3", live pe "Live local engine (...)".
 - **llmSentinel.js**: trio guard ka `|| 6` default count GUESSED 6/8 tha (unmeasured/0 bhi
   6 ban jaata tha → trio ko vote-milte the). Ab unmeasured → conservative 0.
 
@@ -1141,7 +1173,7 @@ Dono root-caused, advance-level fixed, live-verified aur regression-locked. Suit
 
 **User report: "full site code deep Advance pro level Sabhi Agents se check karo har ek work flow ko check karo sab accurately kaam kar raha hai kya aur issues fix kardo"**
 
-4 parallel deep-audit agents (India options workflow / CoinDCX futures / server infra / AI-Ollama stack) ne 8 MAJOR + 4 MEDIUM + ~20 minor findings diye. Sab major+medium fixed + regression-locked. Suite 3464/3464 (183 files, +11 naye tests).
+4 parallel deep-audit agents (India options workflow / CoinDCX futures / server infra / AI-local engine stack) ne 8 MAJOR + 4 MEDIUM + ~20 minor findings diye. Sab major+medium fixed + regression-locked. Suite 3464/3464 (183 files, +11 naye tests).
 
 ### MAJOR — India options engine
 - **B1: paper option EXITS ab LIVE chain premium pe** (`paperTrading.js injectOptionPaperQuotes`): desk live Groww/NSE/BSE premium dikhata tha par SL/T1/T2/BE-trail/EOD BS-model premium pe act karte the — SL model pe hit ho sakta tha jab live chain ne chhua nahi. Ab live-chain LTP first (30s per-underlying cache; `fetchOptionChainFor` stream wiring index.js→routes.js→stream.js), BS sirf honest fallback. `RISK_FREE` 0.065→0.069 align bhi.
@@ -1153,8 +1185,8 @@ Dono root-caused, advance-level fixed, live-verified aur regression-locked. Suit
 - **M2: stale "sirf SPOT desk se entry hoga" messaging**: 4 jagah reworded (spot desk v21.0.5 me removed tha); `futures_margin` blocker ab sirf LIVE mode me fire hota hai.
 
 ### MAJOR — AI stack
-- **AI-B1: deep-path debate OLLAMA_DEEP_MODEL bypass** (`signals.js aiCouncilDebate`): default debate=ON me 🔬 deep modal ka council qwen3:8b pe chalta tha (chip "↗R1·14B" promise karta tha). `opts.deep` ab teeno debate calls me threaded → `councilAskDeep`.
-- **AI-B2: vision failures shared ollama breaker arm karte the** (`llmChain.js councilAskVision`): 2 weak-JSON vision calls board scan seat ko 30s+ park karti thi. Isolated `ollama-vision` breaker (UI me invisible — SENTINEL_PROVIDERS me nahi).
+- **AI-B1: deep-path debate LEGACY_LOCAL_DEEP_MODEL bypass** (`signals.js aiCouncilDebate`): default debate=ON me 🔬 deep modal ka council qwen3:8b pe chalta tha (chip "↗R1·14B" promise karta tha). `opts.deep` ab teeno debate calls me threaded → `councilAskDeep`.
+- **AI-B2: vision failures shared local engine breaker arm karte the** (`llmChain.js councilAskVision`): 2 weak-JSON vision calls board scan seat ko 30s+ park karti thi. Isolated `local engine-vision` breaker (UI me invisible — SENTINEL_PROVIDERS me nahi).
 - **AI-E1: vision cache timeframe-blind**: 15m verdict 1d chart pe serve ho sakta tha. Client ab `tf` bhejta hai (CandleChart), cache key `${mkt}:${symbol}:${side}:${tf}`.
 
 ### MEDIUM
@@ -1170,7 +1202,7 @@ Dono root-caused, advance-level fixed, live-verified aur regression-locked. Suit
 
 - **v21.0.5**: NIFTY real chain via Groww mirror ladder (direct-NSE-first); CoinDCX SPOT desk completely removed (Futures USDT + Equity SIM only).
 - **v21.0.4**: SENSEX real BSE chain via Groww public mirror (`__NEXT_DATA__` parse, 90s cache, 5-min backoff) — "model-estimated" warning root-fixed.
-- **v21.0.3**: NSE DD-Mmm-YYYY expiry ISO normalization (options accuracy + paper-trade reject root cause); Paper Desk SIMPLE view; Ollama scan+deep chips; deep modal real model name.
+- **v21.0.3**: NSE DD-Mmm-YYYY expiry ISO normalization (options accuracy + paper-trade reject root cause); Paper Desk SIMPLE view; local engine scan+deep chips; deep modal real model name.
 - **v21.0.2**: options auto-entry engine (30s loop, quota/cooldown/one-per-contract); exit-plan match T1=+0.5R/T2=+1.0R; expiry-day 14:30 sqoff; futuresViable mode-aware + GLOBALFUTURES quota separation + desk-fairness pick.
 
 ## v20.9.3 — 5TH-PASS FULL-SITE WORKING-FLOW RECHECK (2026-10-07)
@@ -1851,7 +1883,7 @@ The user asked for: "AUTO trade hai jo jab browser karne par Full Access Control
 
 **Why this can't be done in one pass:** the "Start AUTO Trade" button currently fires `proTraderTick` which uses `proTraderAuto.js` — that path has known GAPS documented in `app/docs/audit.md` §2: G1 (browser SL is software-side only, no exchange-resident SL), G2 (leverage best-effort DOM, no read-back), G3 (fixed stakeINR not wallet-based), G4 (no profit booking / partial TP / breakeven / trailing), G5 (no fill confirm), G6 (reversal on 30s tick not candle-close), G7 (two journals, caps bypass), G9 (Render + laptop both fire = duplicate orders). The audit doc lists all 10 gaps; the auto-trading plan addresses each one in sequence.
 
-**What the user gets with v20.6.3 + earlier passes:** the foundational pieces are in place — wallet-risk sizing engine (pure-functional, v20.6.0), RAM governor (v20.6.0), local-first LLM (v20.6.0), OLLAMA_DEEP_MODEL dual-model (v20.6.1), selfHeal ns→ms fix (v20.5.1), CoinDCX futures wallet Mozilla UA + ladder escape-hatch (v20.5.1) + now manual reconnect button (v20.6.3). The remaining Phase 2/4/5 wiring is the multi-week work.
+**What the user gets with v20.6.3 + earlier passes:** the foundational pieces are in place — wallet-risk sizing engine (pure-functional, v20.6.0), RAM governor (v20.6.0), local-first LLM (v20.6.0), LEGACY_LOCAL_DEEP_MODEL dual-model (v20.6.1), selfHeal ns→ms fix (v20.5.1), CoinDCX futures wallet Mozilla UA + ladder escape-hatch (v20.5.1) + now manual reconnect button (v20.6.3). The remaining Phase 2/4/5 wiring is the multi-week work.
 
 ### Verification
 - `npm run typecheck` → clean.
@@ -1868,19 +1900,19 @@ The user asked for: "AUTO trade hai jo jab browser karne par Full Access Control
 - `app/src/version.ts` — bump to v20.6.3
 - `app/package.json` — bump to v20.6.3
 
-## v20.6.1 — OLLAMA_DEEP_MODEL support (qwen3:8b scan + deepseek-r1:14b deep, 16GB auto-swap) (2026-10-01)
+## v20.6.1 — LEGACY_LOCAL_DEEP_MODEL support (qwen3:8b scan + deepseek-r1:14b deep, 16GB auto-swap) (2026-10-01)
 
-User asked: "16GB RAM me ek time par ek hi model chalao. qwen3:8b scan ke liye, deepseek-r1:14b sirf 1-2 symbols ke deep analysis ke liye aisa kar sakte kya aur ml-service HF models enabled karke sath me use nhi kar sakte kya batao". This pass implements `OLLAMA_DEEP_MODEL` so the scan path uses the fast scan model (`qwen3:8b`) and the deep single-symbol analysis path (`/api/ai/deep/:sym` → `getDeepSignal` → `aiCouncilVerify({deep:true})` → `councilAskDeep` → `ollamaCompatCfg({deep:true})` → `OLLAMA_DEEP_MODEL`) uses the deep model (`deepseek-r1:14b`). On a 16GB laptop with `OLLAMA_MAX_LOADED_MODELS=1`, Ollama auto-evicts the scan model and loads the deep model when a deep call lands (cost ~30-60s per swap). **2776 tests / 157 files 100% green · tsc clean · vite build OK · 5 new deep-model tests.**
+User asked: "16GB RAM me ek time par ek hi model chalao. qwen3:8b scan ke liye, deepseek-r1:14b sirf 1-2 symbols ke deep analysis ke liye aisa kar sakte kya aur ml-service HF models enabled karke sath me use nhi kar sakte kya batao". This pass implements `LEGACY_LOCAL_DEEP_MODEL` so the scan path uses the fast scan model (`qwen3:8b`) and the deep single-symbol analysis path (`/api/ai/deep/:sym` → `getDeepSignal` → `aiCouncilVerify({deep:true})` → `councilAskDeep` → `legacyCompatCfg({deep:true})` → `LEGACY_LOCAL_DEEP_MODEL`) uses the deep model (`deepseek-r1:14b`). On a 16GB laptop with `LEGACY_LOCAL_MAX_LOADED_MODELS=1`, local engine auto-evicts the scan model and loads the deep model when a deep call lands (cost ~30-60s per swap). **2776 tests / 157 files 100% green · tsc clean · vite build OK · 5 new deep-model tests.**
 
 ### Q1 — Ek time par ek hi model? YES (recommended)
 
 **The right strategy for 16GB:**
-- **OLLAMA_MODEL=qwen3:8b** — scan path (5.5-6.5 GB). Board compute runs every 30s now (v20.5 latency cut); council call rides this small model → fast JSON.
-- **OLLAMA_DEEP_MODEL=deepseek-r1:14b** — deep path (9-10 GB). User clicks "Deep" on one symbol → council auto-swaps to the larger model for that one call, then swaps back to scan model on the next board cycle.
-- **OLLAMA_MAX_LOADED_MODELS=1** in Ollama service env (Windows) — only one model in KV cache at a time. Ollama auto-evicts + re-loads on the swap; SmartAI's code paths are model-agnostic — they just request the model they want.
-- **OLLAMA_KEEP_ALIVE=10m** — keep the hot model loaded for 10 min after the last request (so scanning bursts don't thrash the model in/out repeatedly).
-- **OLLAMA_NUM_PARALLEL=1** — no concurrent Ollama requests (the box can't handle parallel inference on two models simultaneously).
-- **OLLAMA_FLASH_ATTENTION=1** — faster attention (a bit more RAM, worth it).
+- **LEGACY_LOCAL_MODEL=qwen3:8b** — scan path (5.5-6.5 GB). Board compute runs every 30s now (v20.5 latency cut); council call rides this small model → fast JSON.
+- **LEGACY_LOCAL_DEEP_MODEL=deepseek-r1:14b** — deep path (9-10 GB). User clicks "Deep" on one symbol → council auto-swaps to the larger model for that one call, then swaps back to scan model on the next board cycle.
+- **LEGACY_LOCAL_MAX_LOADED_MODELS=1** in local engine service env (Windows) — only one model in KV cache at a time. local engine auto-evicts + re-loads on the swap; SmartAI's code paths are model-agnostic — they just request the model they want.
+- **LEGACY_LOCAL_KEEP_ALIVE=10m** — keep the hot model loaded for 10 min after the last request (so scanning bursts don't thrash the model in/out repeatedly).
+- **LEGACY_LOCAL_NUM_PARALLEL=1** — no concurrent local engine requests (the box can't handle parallel inference on two models simultaneously).
+- **LEGACY_LOCAL_FLASH_ATTENTION=1** — faster attention (a bit more RAM, worth it).
 
 **RAM budget with this setup:**
 | Component | ~RAM |
@@ -1889,38 +1921,38 @@ User asked: "16GB RAM me ek time par ek hi model chalao. qwen3:8b scan ke liye, 
 | Chrome automation profile (3 tabs) | 1.5–3 GB |
 | Node server (SmartAI) | 0.4–1 GB |
 | ml-service base (Python, HF OFF) | 0.5–1 GB |
-| Ollama qwen3:8b (scan, loaded most of the time) | 5.5–6.5 GB |
+| local engine qwen3:8b (scan, loaded most of the time) | 5.5–6.5 GB |
 | **Total (scan mode)** | **~11–16 GB → workable, tight** |
-| Ollama deepseek-r1:14b (deep call, auto-swap) | 9–10 GB |
+| local engine deepseek-r1:14b (deep call, auto-swap) | 9–10 GB |
 | **Total (deep mode, swap)** | **~15–19 GB → tight, but only for ~30-60s** |
 
 The RAM governor (`v20.6` module `server/ai/ramGovernor.js`) will catch the deep-mode transient — if free drops under 2GB during the 14B inference, RED state blocks new auto entries (positions still managed) + Telegram CRITICAL alert. The scan path resumes automatically once the 14B model is evicted.
 
-### Q2 — ml-service HF models + Ollama simultaneously? NO (on 16GB)
+### Q2 — ml-service HF models + local engine simultaneously? NO (on 16GB)
 
-**The honest answer:** No, do NOT enable `HF_MODELS_ENABLED=true` alongside Ollama on a 16GB laptop. The math:
+**The honest answer:** No, do NOT enable `HF_MODELS_ENABLED=true` alongside local engine on a 16GB laptop. The math:
 - Chronos-T5 (torch) + FinBERT (torch) = ~2-3 GB additional RAM after load + ~1 GB torch runtime overhead
 - Combined with qwen3:8b (6GB) + Windows (4GB) + Chrome (2GB) + Node (0.7GB) + Python (0.7GB) = **~14-16 GB → INSTANT SWAP**
 
 **What you CAN do (the "alternating phase" pattern):**
-1. **Default state:** `HF_MODELS_ENABLED=false` (v20.6 default) — Ollama runs alone. This is what you want for live auto-trading.
-2. **Scheduled batch (weekly/daily):** Stop the SmartAI server (or set `LLM_LOCAL_ONLY=0` + `LLM_PRIORITY=` empty + stop Ollama service) → set `HF_MODELS_ENABLED=true` → restart ml-service → run the retraining batch (`/hf/forecast` for Chronos, `/hf/sentiment` for FinBERT) → stop ml-service → flip back.
+1. **Default state:** `HF_MODELS_ENABLED=false` (v20.6 default) — local engine runs alone. This is what you want for live auto-trading.
+2. **Scheduled batch (weekly/daily):** Stop the SmartAI server (or set `LEGACY_LOCAL_ONLY=0` + `LLM_PRIORITY=` empty + stop local engine service) → set `HF_MODELS_ENABLED=true` → restart ml-service → run the retraining batch (`/hf/forecast` for Chronos, `/hf/sentiment` for FinBERT) → stop ml-service → flip back.
 
 This is exactly what the audit doc (`app/docs/audit.md` §4 Phase 7 calibration) describes — HF models are most useful for: (1) retraining the LightGBM signal model with HF embeddings, (2) FinBERT sentiment on news, (3) Chronos-T5 forecasts. None of these need to run continuously — they're batch jobs, ideally overnight or when the laptop isn't actively auto-trading.
 
-### Implementation: OLLAMA_DEEP_MODEL dual-model flow
+### Implementation: LEGACY_LOCAL_DEEP_MODEL dual-model flow
 
 **Code changes:**
-- `server/ai/llmSentinel.js:35-45` — new env `OLLAMA_DEEP_MODEL` (default unset, falls back to `OLLAMA_MODEL`). `ollamaCompatCfg({deep:true})` now returns `{ url, defModel: OLLAMA_DEEP_MODEL, deepModel }` when `deep=true`.
-- `server/ai/llmChain.js:146-220` — `councilAsk(prompt, deps, opts={})` now accepts `opts.deep=true`; the ollama leg passes `{deep}` to `ollamaCompatCfg()`. New exported `councilAskDeep(prompt, deps)` is a thin wrapper: `councilAsk(prompt, deps, {deep:true})`.
+- `server/ai/llmSentinel.js:35-45` — new env `LEGACY_LOCAL_DEEP_MODEL` (default unset, falls back to `LEGACY_LOCAL_MODEL`). `legacyCompatCfg({deep:true})` now returns `{ url, defModel: LEGACY_LOCAL_DEEP_MODEL, deepModel }` when `deep=true`.
+- `server/ai/llmChain.js:146-220` — `councilAsk(prompt, deps, opts={})` now accepts `opts.deep=true`; the local engine leg passes `{deep}` to `legacyCompatCfg()`. New exported `councilAskDeep(prompt, deps)` is a thin wrapper: `councilAsk(prompt, deps, {deep:true})`.
 - `server/ai/signals.js:81` — import `councilAskDeep` from `llmChain.js`.
 - `server/ai/signals.js:788` — `aiCouncilVerify(candidates, deps, market, opts={})` now accepts `opts.deep=true`; if true, calls `councilAskDeep(prompt, deps)` instead of `councilAsk(prompt, deps)`.
 - `server/ai/signals.js:2504` — `getDeepSignal` now passes `{deep: true}` to `aiCouncilVerify`. The board path (`aiCouncilVerify` call at signals.js:1599) does NOT pass `opts.deep` → scan model is always used there.
-- `.env.example:497-505` — `OLLAMA_DEEP_MODEL` documented with the worked example + RAM-budget table.
+- `.env.example:497-505` — `LEGACY_LOCAL_DEEP_MODEL` documented with the worked example + RAM-budget table.
 
 **Test:** `test/llmChainDeepModel.test.ts` (5 tests) locks:
 1. `councilAskDeep` is exported.
-2. Scan path (councilAsk with `LLM_LOCAL_ONLY=1`) uses `qwen3:8b` (the scan model).
+2. Scan path (councilAsk with `LEGACY_LOCAL_ONLY=1`) uses `qwen3:8b` (the scan model).
 3. Deep path (councilAskDeep) uses `deepseek-r1:14b` (the deep model).
 4. Scan path uses scan model even after a deep path ran (no cross-contamination).
 5. `councilAskDeep` is a thin wrapper around `councilAsk(opts.deep=true)`.
@@ -1933,32 +1965,32 @@ This is exactly what the audit doc (`app/docs/audit.md` §4 Phase 7 calibration)
 ### Recommended `.env` (16GB laptop setup)
 ```env
 # Local-only LLM (skip all cloud providers)
-LLM_LOCAL_ONLY=1
-LLM_PRIORITY=ollama
+LEGACY_LOCAL_ONLY=1
+LLM_PRIORITY=local engine
 # Scan model (5.5-6.5GB, fast JSON)
-OLLAMA_MODEL=qwen3:8b
+LEGACY_LOCAL_MODEL=qwen3:8b
 # Deep model (9-10GB, deepseek-r1:14b — auto-swap, ~30-60s)
-OLLAMA_DEEP_MODEL=deepseek-r1:14b
+LEGACY_LOCAL_DEEP_MODEL=deepseek-r1:14b
 # RAM governor (catches deep-mode transient)
 RAM_YELLOW_FREE_GB=3.5
 RAM_RED_FREE_GB=2
 # Self-improvement loop DISABLED by default
 # SELFIMPROVE_ENABLED=false  (default off — leave unset)
-# HF models DISABLED by default (do NOT enable alongside Ollama on 16GB)
+# HF models DISABLED by default (do NOT enable alongside local engine on 16GB)
 # HF_MODELS_ENABLED=false  (default off)
 ```
 
-Windows Ollama service env (NOT `.env` — set in the Ollama service config):
+Windows local engine service env (NOT `.env` — set in the local engine service config):
 ```
-OLLAMA_MAX_LOADED_MODELS=1
-OLLAMA_NUM_PARALLEL=1
-OLLAMA_KEEP_ALIVE=10m
-OLLAMA_FLASH_ATTENTION=1
+LEGACY_LOCAL_MAX_LOADED_MODELS=1
+LEGACY_LOCAL_NUM_PARALLEL=1
+LEGACY_LOCAL_KEEP_ALIVE=10m
+LEGACY_LOCAL_FLASH_ATTENTION=1
 ```
 
 ## v20.6.0 — SELF-IMPROVEMENT LOOP REMOVED + LOCAL-FIRST LLM + RAM GOVERNOR + SIZING ENGINE + BROWSER HARDENING (2026-10-01)
 
-User shared a comprehensive 9-phase auto-trading reimplementation plan (local Ollama · wallet-sized 5–10x · browser-driven) for a 16GB RAM laptop setup, and explicitly asked to **completely remove the Self-Improvement Engine — Super Intelligence Loop** because it was "load-causing and affecting trade signals", and **clean up the site**. This pass implements the explicit asks + the most impactful Phase 1/3/6 items from the plan; the remaining Phases (2/4/5/7/8/9) are documented in the new `app/docs/audit.md` as deferred work. **2771 tests / 156 files 100% green · tsc clean · vite build OK · 3 new test files (32 new tests).**
+User shared a comprehensive 9-phase auto-trading reimplementation plan (local engine · wallet-sized 5–10x · browser-driven) for a 16GB RAM laptop setup, and explicitly asked to **completely remove the Self-Improvement Engine — Super Intelligence Loop** because it was "load-causing and affecting trade signals", and **clean up the site**. This pass implements the explicit asks + the most impactful Phase 1/3/6 items from the plan; the remaining Phases (2/4/5/7/8/9) are documented in the new `app/docs/audit.md` as deferred work. **2771 tests / 156 files 100% green · tsc clean · vite build OK · 3 new test files (32 new tests).**
 
 ### Critical: Self-Improvement Engine / Super Intelligence Loop — REMOVED FROM DEFAULT RUNTIME
 
@@ -1979,9 +2011,9 @@ User shared a comprehensive 9-phase auto-trading reimplementation plan (local Ol
 
 ### Phase 1a — Local-first LLM (`llmChain.js`)
 
-- New env `LLM_PRIORITY` (comma-separated provider list; providers NOT in the list are skipped entirely — no fetch, no key probe). Default (env unset) = historical order `gemini→groq→cerebras→openrouter→huggingface→nvidia→ollama` (backward-compatible).
-- New env `LLM_LOCAL_ONLY=1` — short-circuit ALL cloud providers and try ONLY the local Ollama engine. Designed for the 16GB laptop setup (Chrome + Node + Ollama all running locally; cloud calls add latency + cost + bandwidth).
-- New env `OLLAMA_MODEL=qwen3:8b` recommended (faster + better JSON than the repo's historical `llama3.1:8b`); the auto-trading plan's "thinking" output strip (`<think>…</think>`) is handled by the existing `tryParseJson` regex.
+- New env `LLM_PRIORITY` (comma-separated provider list; providers NOT in the list are skipped entirely — no fetch, no key probe). Default (env unset) = historical order `gemini→groq→cerebras→openrouter→huggingface→nvidia→local engine` (backward-compatible).
+- New env `LEGACY_LOCAL_ONLY=1` — short-circuit ALL cloud providers and try ONLY the local engine. Designed for the 16GB laptop setup (Chrome + Node + local engine all running locally; cloud calls add latency + cost + bandwidth).
+- New env `LEGACY_LOCAL_MODEL=qwen3:8b` recommended (faster + better JSON than the repo's historical `llama3.1:8b`); the auto-trading plan's "thinking" output strip (`<think>…</think>`) is handled by the existing `tryParseJson` regex.
 - Tests: `test/llmChainEnv.test.ts` (7 tests) locks the env-driven order + local-only short-circuit.
 
 ### Phase 1b — RAM Governor (`server/ai/ramGovernor.js`, NEW module)
@@ -1998,7 +2030,7 @@ User shared a comprehensive 9-phase auto-trading reimplementation plan (local Ol
 
 - `hf_models` (Chronos-T5 torch + FinBERT torch) mount is now gated behind `HF_MODELS_ENABLED=true` (default false).
 - `expert_mode` mount similarly gated behind `EXPERT_MODE_ENABLED=true` (default false) — it imports torch + HF models internally.
-- Default install gets only the base LightGBM/sklearn ML service — saves RAM for the local Ollama engine.
+- Default install gets only the base LightGBM/sklearn ML service — saves RAM for the local engine.
 
 ### Phase 3 — Sizing engine (`server/exec/sizing.js`, NEW module + tests)
 
@@ -2043,7 +2075,7 @@ Comprehensive 8-section audit:
 ### `.env.example` updates (lines 480-557)
 
 All new env keys documented with comments:
-- LLM: `LLM_PRIORITY`, `LLM_LOCAL_ONLY`, `OLLAMA_MODEL`, `OLLAMA_BASE` + Windows Ollama service env notes
+- LLM: `LLM_PRIORITY`, `LEGACY_LOCAL_ONLY`, `LEGACY_LOCAL_MODEL`, `LEGACY_LOCAL_BASE` + Windows local engine service env notes
 - RAM: `RAM_YELLOW_FREE_GB`, `RAM_RED_FREE_GB`, `RAM_TICK_SEC`, `RAM_RSS_RESERVE_MB`
 - ml-service: `HF_MODELS_ENABLED`, `EXPERT_MODE_ENABLED`
 - Execution port: `EXEC_MODE`, `SMARTAI_EXEC_NODE`
@@ -2110,8 +2142,8 @@ The user's "trade reversal chance ho raha hai" complaint was caused by 3 stacked
 The 6-LLM-seat Global Market Council (`councilEnabled()`) is OFF by default. With no `aiConf` source, `computeSuperScore` collapsed to the 2-source `0.55·engineConf + 0.45·expertScore` blend — the user's "superintelligence" was just two quant sources.
 
 - **File**: `app/server/ai/signals.js` (lines ~1894 board path, ~2680 deep path)
-- **Fix**: When the LLM council is offline (no keys + no reachable ollama → `aiConf == null`), derive a DETERMINISTIC council confidence from the engine's own committee: `aiConf = round(engineConf × (0.85 + 0.10 × agreement))`. This is honest because the deterministic council fundamentally re-derives its verdict from the SAME votes the engine already has — an aligned committee produces a high-confidence deterministic verdict; a split committee produces a low-confidence one. The slight 5-15% discount vs engineConf signals "deterministic, not LLM" so the UI can label it honestly via the new `superIntel.aiSource = 'deterministic' | 'council' | null` field.
-- This makes the 3-source blend (`0.45·engineConf + 0.35·expert + 0.20·aiConf`) actually fire on every default install. When LLM keys are present (or ollama is reachable), the real council runs and `aiSource = 'council'`. No LLM cost added — the deterministic fallback is pure math.
+- **Fix**: When the LLM council is offline (no keys + no reachable local engine → `aiConf == null`), derive a DETERMINISTIC council confidence from the engine's own committee: `aiConf = round(engineConf × (0.85 + 0.10 × agreement))`. This is honest because the deterministic council fundamentally re-derives its verdict from the SAME votes the engine already has — an aligned committee produces a high-confidence deterministic verdict; a split committee produces a low-confidence one. The slight 5-15% discount vs engineConf signals "deterministic, not LLM" so the UI can label it honestly via the new `superIntel.aiSource = 'deterministic' | 'council' | null` field.
+- This makes the 3-source blend (`0.45·engineConf + 0.35·expert + 0.20·aiConf`) actually fire on every default install. When LLM keys are present (or local engine is reachable), the real council runs and `aiSource = 'council'`. No LLM cost added — the deterministic fallback is pure math.
 - When the user later sets `AI_ENABLE_GLOBAL_COUNCIL=on`, the real 6-seat LLM council runs (12s soft deadline, 90s verdict cache) and `aiSource = 'council'` reflects it.
 
 ### High: Expert Picks — accuracy gates matching the Signal Board
@@ -2491,23 +2523,23 @@ The official spot socket (`wss://stream-spot.coindcx.com`) maintained a full INR
 
 **User spec: "AI language engines offline hain… Engine wapas aane par prose richer ho jayega — isko theek karo advance pro level pe" + "Manual Trade Tracker live-feed fix + superintelligence patch pe continue karo".**
 
-**The gap the audit found:** v18.7 upgraded the two DESK AGENTS (crypto + intraday) to the sentinel chain with the keyless local ollama engine — but every OTHER LLM path in the app silently stayed on the OLD 4-provider ladder (gemini → groq → cerebras → openrouter, no sentinel, no huggingface/nvidia, **no ollama**):
-- `llmChain.js` `councilAsk` — the Global Market Council's 6 persona seats, the LLM second-opinion validator (A2) and the weekly review all ride this chain → with every cloud engine down/unkeyed they degraded to "AI language engines offline" while a perfectly good local Ollama sat UNUSED on 127.0.0.1:11434.
+**The gap the audit found:** v18.7 upgraded the two DESK AGENTS (crypto + intraday) to the sentinel chain with the keyless local engine — but every OTHER LLM path in the app silently stayed on the OLD 4-provider ladder (gemini → groq → cerebras → openrouter, no sentinel, no huggingface/nvidia, **no local engine**):
+- `llmChain.js` `councilAsk` — the Global Market Council's 6 persona seats, the LLM second-opinion validator (A2) and the weekly review all ride this chain → with every cloud engine down/unkeyed they degraded to "AI language engines offline" while a perfectly good local inference engine sat UNUSED.
 - `signals.js`'s PRIVATE chain (×2: the debate path + the single-shot verify path) — the board's own AI Council seat (w=1.5, the heaviest voter) could never use a saved HF/NVIDIA key or the local engine, and reported zero health to the sentinel (a dead engine got retried every board cycle).
 
 ### The fix — ONE chain, one health ledger, one place to fix
-- **`server/ai/llmChain.js`** (rewritten v18.8): the shared `councilAsk` now ENDS at the keyless local ollama engine — probe (2.5s, 90s-cached) → `/v1/chat/completions` with the OpenAI-compat body, sentinel-tracked like every cloud engine (success → ready, failure → cooldown ladder). **Provider-aware timeouts:** cloud engines keep the 15s bound; the local engine gets **90s** (a CPU-only llama3.1:8b takes 30-60s for a 2k-token JSON verdict — the old shared bound made it time out on every CPU machine). `aiKeysPresent` now counts all SIX cloud engines; new `aiEnginesOnline()` async gate also counts a reachable ollama.
-- **`server/ai/signals.js`**: the private 4-provider ladder (both copies + its private `askGemini`/`askOpenAICompat`/`tryParseJson`/`aiKeysPresent`) is DELETED — `aiCouncilDebate` and `aiCouncilVerify` ride the shared chain. The council gate is ollama-aware: cloud keys OR a reachable local engine → the board seat goes ONLINE for a zero-cloud-key local install too.
-- **`server/ai/llmValidator.js` + `server/ai/council.js`**: the availability gates (`aiKeysPresent`) now OR a live `ollamaProbe()` — the second-opinion validator and the council's board + deep persona batches stay armed on a local-only install. (Probe imported directly from `llmSentinel` — the existing `llmChain` test mocks stay untouched.)
-- **`server/ai/cryptoAgent.js` + `server/intraday/agent.js`**: the local engine's per-round tool budget is 30s → **120s** (provider-aware; cloud engines keep 30s) — on CPU boxes every ollama round used to blow the shared timeout mid tool-loop.
-- Net effect: with the user's setup (OpenRouter + HF + NVIDIA live, Cerebras maybe, local Ollama ready) EVERY LLM surface in the app — desk chat, board AI Council seat, global council personas, borderline validator, weekly review — now answers through the same 7-engine chain with the same health ledger, and an Ollama-only machine gets full LLM coverage with zero cloud keys.
+- **`server/ai/llmChain.js`** (rewritten v18.8): the shared `councilAsk` now ENDS at the keyless local engine — probe (2.5s, 90s-cached) → `/v1/chat/completions` with the OpenAI-compat body, sentinel-tracked like every cloud engine (success → ready, failure → cooldown ladder). **Provider-aware timeouts:** cloud engines keep the 15s bound; the local engine gets **90s** (a CPU-only llama3.1:8b takes 30-60s for a 2k-token JSON verdict — the old shared bound made it time out on every CPU machine). `aiKeysPresent` now counts all SIX cloud engines; new `aiEnginesOnline()` async gate also counts a reachable local engine.
+- **`server/ai/signals.js`**: the private 4-provider ladder (both copies + its private `askGemini`/`askOpenAICompat`/`tryParseJson`/`aiKeysPresent`) is DELETED — `aiCouncilDebate` and `aiCouncilVerify` ride the shared chain. The council gate is local engine-aware: cloud keys OR a reachable local engine → the board seat goes ONLINE for a zero-cloud-key local install too.
+- **`server/ai/llmValidator.js` + `server/ai/council.js`**: the availability gates (`aiKeysPresent`) now OR a live `local engineProbe()` — the second-opinion validator and the council's board + deep persona batches stay armed on a local-only install. (Probe imported directly from `llmSentinel` — the existing `llmChain` test mocks stay untouched.)
+- **`server/ai/cryptoAgent.js` + `server/intraday/agent.js`**: the local engine's per-round tool budget is 30s → **120s** (provider-aware; cloud engines keep 30s) — on CPU boxes every local engine round used to blow the shared timeout mid tool-loop.
+- Net effect: with the user's setup (OpenRouter + HF + NVIDIA live, Cerebras maybe, local engine ready) EVERY LLM surface in the app — desk chat, board AI Council seat, global council personas, borderline validator, weekly review — now answers through the same 7-engine chain with the same health ledger, and an local engine-only machine gets full LLM coverage with zero cloud keys.
 
 ### Validation
-`tsc` CLEAN · **vitest 150 files / 2592 tests — 100% GREEN** (+8 in the new `test/engineChainUnify.test.ts`: ollama answers with zero cloud keys, sentinel-tracked, six-engine key gate, board seat online via ollama, HF fall-through on the board seat, honest offline, council personas on the local engine) · `vite build` 5.31s · every edited file passes `node --check`.
+`tsc` CLEAN · **vitest 150 files / 2592 tests — 100% GREEN** (+8 in the new `test/engineChainUnify.test.ts`: local engine answers with zero cloud keys, sentinel-tracked, six-engine key gate, board seat online via local engine, HF fall-through on the board seat, honest offline, council personas on the local engine) · `vite build` 5.31s · every edited file passes `node --check`.
 
 ## v18.7 — AI ENGINE SENTINEL (earlier session; context entry)
 
-The per-engine health ledger (`server/ai/llmSentinel.js`): circuit-breaker cooldowns (401/403 → 15 min, 429 → 90s, network → 30s…300s ladder), half-open auto-retry, `GET /api/ai/engines` + `POST /api/ai/engines/recheck`, the `EngineHealthStrip` UI chips, and ollama liveness probing — plus the desk-agent chain upgrades and the v18.6.3/v18.6.4 REALTIME NEVER STOPS live-feed fixes (client watchdog + SSE loopback cap 8 + tracker vote-budget 12s) that the 2584-test baseline already locked.
+The per-engine health ledger (`server/ai/llmSentinel.js`): circuit-breaker cooldowns (401/403 → 15 min, 429 → 90s, network → 30s…300s ladder), half-open auto-retry, `GET /api/ai/engines` + `POST /api/ai/engines/recheck`, the `EngineHealthStrip` UI chips, and local engine liveness probing — plus the desk-agent chain upgrades and the v18.6.3/v18.6.4 REALTIME NEVER STOPS live-feed fixes (client watchdog + SSE loopback cap 8 + tracker vote-budget 12s) that the 2584-test baseline already locked.
 
 ## v13.2 — FULL IMPLEMENTATION PLAN (Accuracy Track A + Bandwidth Track B) + Site Cleanup (2026-09-25)
 

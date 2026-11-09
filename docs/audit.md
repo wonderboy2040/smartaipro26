@@ -1,7 +1,12 @@
-# v20.6 Audit — Auto-Trading Reimplementation Plan (Local Ollama · Wallet-sized 5–10x · Browser-driven)
+# v20.6 Audit — Auto-Trading Reimplementation Plan (Local engine · Wallet-sized 5–10x · Browser-driven)
+
+> **ARCHIVED (v20.6 era).** This audit predates the v22.0 FreeLLMAPI migration.
+> AI-lane references below have been generalized to "local engine"; the current
+> architecture is the single FreeLLMAPI router documented in `docs/CHANGES.md`
+> (v22.0.0 entry). Trading-risk findings remain valid history.
 
 **Repo:** `wonderboy2040/smarttest` (commit `80ac1d6` "Update expert picks and coindcx mcp", 1 Oct 2026)
-**Target machine:** 16GB RAM laptop, sab kuch local (Chrome tabs + Node server + Ollama)
+**Target machine:** 16GB RAM laptop, sab kuch local (Chrome tabs + Node server + local engine)
 **Plan source:** user-supplied 9-phase `SUPERINTELLIGENCE_PLAN.md` replacement
 
 This document is the Phase 0 audit pass. It maps what's already built, what's been fixed in v20.6, and what remains as deferred work for the later phases.
@@ -10,7 +15,7 @@ This document is the Phase 0 audit pass. It maps what's already built, what's be
 
 ## 0. What was read (and what wasn't)
 
-**Read (code-level):** `proTraderAuto.js` (full), `browserAgent.js` (header + order/leverage), `futures.js` (header, wallet, TPSL, execution gauntlet, position watcher), `coindcxOrders.js` (header/config/trailing), `ensemble.js` (leverage/trail), `llmChain.js`, `llmSentinel.js` (Ollama), `ml-service/app/main.py`, `Start-AutoBrowser.bat`, `.env.example`, the auto-trade-plan investigator's full report (Task ID `inv-auto-trade-plan`).
+**Read (code-level):** `proTraderAuto.js` (full), `browserAgent.js` (header + order/leverage), `futures.js` (header, wallet, TPSL, execution gauntlet, position watcher), `coindcxOrders.js` (header/config/trailing), `ensemble.js` (leverage/trail), `llmChain.js`, `llmSentinel.js` (local engine), `ml-service/app/main.py`, `Start-AutoBrowser.bat`, `.env.example`, the auto-trade-plan investigator's full report (Task ID `inv-auto-trade-plan`).
 
 **Not read / verify in Phase 0+:** `signals.js` (full), `superIntel.js`, `council.js` (full), `cryptoAgent.js`, `agent.js`, `routes.js` (full), UI components (other than SelfImprovementPanel mount), `reversalEngine.js` internals, `browserAgent.js` selectors live-DOM match. App not run; tests not executed against live CoinDCX/Dhan DOM.
 
@@ -28,7 +33,7 @@ This document is the Phase 0 audit pass. It maps what's already built, what's be
 | Reversal recovery | ₹ loss-cap cut → stop-and-reverse → ₹ target booking (opt-in) | `reversalEngine.js` |
 | Risk guards | daily trades/loss caps, concentration (5 open), event guard, global risk-off, circuit guard, wick filter, correlation | `coindcxOrders.js`, `eventGuard.js`, `globalRisk.js`, `wickFilter.js`, `correlation.js` |
 | Approval flow | Telegram `/trade` → Approve → PIN → execute | `tradeApproval.js` |
-| Local LLM | Ollama wired (chain ke aakhir me), probe, sentinel/cooldown, 90s timeout | `llmChain.js:119` (`councilAsk`), `llmSentinel.js:157` (`ollamaProbe`), `:185` (`ollamaCompatCfg`), `:36` (default `'llama3.1:8b'`) |
+| Local LLM | local engine wired (chain ke aakhir me), probe, sentinel/cooldown, 90s timeout | `llmChain.js:119` (`councilAsk`), `llmSentinel.js:157` (`local engineProbe`), `:185` (`local engineCompatCfg`), `:36` (default `'llama3.1:8b'`) |
 | Tests | 153 files / 2737+ tests | `test/` |
 
 ---
@@ -44,8 +49,8 @@ This document is the Phase 0 audit pass. It maps what's already built, what's be
 | **G5** | Entry plan.entry par LIMIT; actual fill price/qty exchange se read nahi hota | `_tryEntry`, `_pnlOf` | Journal ≠ exchange truth; unfilled order cancel nahi |
 | **G6** | Reversal confirm = 2 consecutive 30s ticks, candle-close nahi; ensemble flip 60s-cached board se | `REVERSAL_CONFIRM_NEEDED = 2` | Whipsaw me galat exit ya late exit |
 | **G7** | Do alag engines, do journals (`protrader-auto-journal.json` vs `ai-trading-journal.json`). SAPTA sirf `killSwitch` padhta hai; `dailyMaxLossINR`, `maxOpenPositions`, concentration caps **apply nahi** hote | `proTraderTick` | Caps bypass; double exposure |
-| **G8** | Ollama cloud engines ke baad aakhri me hai; koi RAM governor nahi; ml-service ke optional HF models RAM se compete kar sakte hain | `councilAsk`, `hf_models.py` | 16GB me swap/freeze → bot hang |
-| **G9** | CDP browser + Ollama sirf laptop par hain. Render copy inhe use nahi kar sakti; agar dono jagah auto ON hua to **duplicate orders** | `browserAgent.js` | Double execution |
+| **G8** | local engine cloud engines ke baad aakhri me hai; koi RAM governor nahi; ml-service ke optional HF models RAM se compete kar sakte hain | `councilAsk`, `hf_models.py` | 16GB me swap/freeze → bot hang |
+| **G9** | CDP browser + local engine sirf laptop par hain. Render copy inhe use nahi kar sakti; agar dono jagah auto ON hua to **duplicate orders** | `browserAgent.js` | Double execution |
 | **G10** | `Start-AutoBrowser.bat` me background-throttling flags nahi the | `.bat:54` (pre-v20.6) | Minimized/background tab me timers slow → late reaction |
 
 ---
@@ -73,9 +78,9 @@ This document is the Phase 0 audit pass. It maps what's already built, what's be
 
 ### Phase 1a — Local-first LLM (`llmChain.js`)
 
-- New env `LLM_PRIORITY` (comma-separated provider list; providers NOT in the list are skipped entirely — no fetch, no key probe). Default (env unset) = historical order `gemini→groq→cerebras→openrouter→huggingface→nvidia→ollama` (backward-compatible).
-- New env `LLM_LOCAL_ONLY=1` — short-circuit ALL cloud providers and try ONLY the local Ollama engine. Designed for the 16GB laptop setup (Chrome + Node + Ollama all running locally; cloud calls add latency + cost + bandwidth).
-- New env `OLLAMA_MODEL=qwen3:8b` recommended (faster + better JSON than the repo's historical `llama3.1:8b`); the auto-trading plan's "thinking" output strip (`<think>…</think>`) is handled by the existing `tryParseJson` regex.
+- New env `LLM_PRIORITY` (comma-separated provider list; providers NOT in the list are skipped entirely — no fetch, no key probe). Default (env unset) = historical order `gemini→groq→cerebras→openrouter→huggingface→nvidia→local engine` (backward-compatible).
+- New env `LEGACY_LOCAL_ONLY=1` — short-circuit ALL cloud providers and try ONLY the local engine. Designed for the 16GB laptop setup (Chrome + Node + local engine all running locally; cloud calls add latency + cost + bandwidth).
+- New env `LEGACY_LOCAL_MODEL=qwen3:8b` recommended (faster + better JSON than the repo's historical `llama3.1:8b`); the auto-trading plan's "thinking" output strip (`<think>…</think>`) is handled by the existing `tryParseJson` regex.
 - Tests: `test/llmChainEnv.test.ts` locks the env-driven order + local-only short-circuit.
 
 ### Phase 1b — RAM Governor (`server/ai/ramGovernor.js`, NEW module)
@@ -93,7 +98,7 @@ This document is the Phase 0 audit pass. It maps what's already built, what's be
 
 - `hf_models` (Chronos-T5 torch + FinBERT torch) mount is now gated behind `HF_MODELS_ENABLED=true` (default false).
 - `expert_mode` mount similarly gated behind `EXPERT_MODE_ENABLED=true` (default false) — it imports torch + HF models internally.
-- Default install gets only the base LightGBM/sklearn ML service — saves RAM for the local Ollama engine.
+- Default install gets only the base LightGBM/sklearn ML service — saves RAM for the local engine.
 
 ### Phase 3 — Sizing engine (`server/exec/sizing.js`, NEW module + tests)
 
@@ -145,16 +150,16 @@ Contract test suite that runs the same scenarios across all three adapters. **Es
 
 ### Phase 7 — Signal quality & calibration (3-4 days + ongoing)
 
-Verify gates (75/65/90 + CONFIRM) against ledger bucket-wise win-rate/expectancy (R); if "verified ≥ 90" edge not visible, re-tune via `gateTuner.js` / `driftMonitor.js` reuse (min sample ≥ 100 closed trades). New filters: regime, spread/depth/liquidity, funding cost, `eventGuard`, `globalRisk` risk-off, correlation bucket. LLM veto (Ollama): strict JSON `{verdict: GO|NO_GO|REDUCE, reasons[], red_flags[]}`; only downgrades. Shadow mode 2-4 weeks. Stop-and-reverse OFF in leveraged mode.
+Verify gates (75/65/90 + CONFIRM) against ledger bucket-wise win-rate/expectancy (R); if "verified ≥ 90" edge not visible, re-tune via `gateTuner.js` / `driftMonitor.js` reuse (min sample ≥ 100 closed trades). New filters: regime, spread/depth/liquidity, funding cost, `eventGuard`, `globalRisk` risk-off, correlation bucket. LLM veto (local engine): strict JSON `{verdict: GO|NO_GO|REDUCE, reasons[], red_flags[]}`; only downgrades. Shadow mode 2-4 weeks. Stop-and-reverse OFF in leveraged mode.
 
 ### Phase 8 — UI & Telegram
 
-ProTrader panel: execution mode badge (PAPER/LIVE, API/BROWSER), protection status (SL on exchange ✔/✘), live R-multiple, stage (T1/Runner), liq distance, wallet equity/margin use, RAM governor state, Ollama status/latency, kill-switch L1/L2/L3 buttons. Telegram: entry/T1/T2/trail/close alerts, `/halt`, `/reduce`, `/status`, "PROTECTION MISSING" CRITICAL. Daily/weekly report. **Estimated 2-3 days.**
+ProTrader panel: execution mode badge (PAPER/LIVE, API/BROWSER), protection status (SL on exchange ✔/✘), live R-multiple, stage (T1/Runner), liq distance, wallet equity/margin use, RAM governor state, local engine status/latency, kill-switch L1/L2/L3 buttons. Telegram: entry/T1/T2/trail/close alerts, `/halt`, `/reduce`, `/status`, "PROTECTION MISSING" CRITICAL. Daily/weekly report. **Estimated 2-3 days.**
 
 ### Phase 9 — Replay, Paper Soak, Staged Go-Live (calendar: 6-8 weeks)
 
 1. Replay/backtest: recorded candles on position manager (exits) — LLM ke bina (deterministic) + sampled LLM replay.
-2. Paper soak 3-4 weeks (PaperPort, real feeds, real RAM load: Chrome + Ollama + server).
+2. Paper soak 3-4 weeks (PaperPort, real feeds, real RAM load: Chrome + local engine + server).
 3. Live micro: min size, 1-2x, 2 weeks, one pair.
 4. Ramp: 5x (risk 0.5% → 1%), ek-ek step jab pichla stage clean ho.
 5. 7-10x sirf jab: ≥100 live closed trades, expectancy fees ke baad positive, max DD limit ke andar, protection-miss = 0, reconcile mismatch = 0.
@@ -167,7 +172,7 @@ ProTrader panel: execution mode badge (PAPER/LIVE, API/BROWSER), protection stat
 2. Size **wallet equity × risk%** se; leverage exchange par **read-back verified**.
 3. T1/T2/runner/trail/give-back + tiered reversal (candle-close) automated + tested.
 4. Reconcile loop + dead-man alert + kill-switch L1-L3 chaos-tested.
-5. Ollama (8B) + Chrome + server **16GB me stable** (RAM governor ke saath 8+ ghante soak).
+5. local engine (8B) + Chrome + server **16GB me stable** (RAM governor ke saath 8+ ghante soak).
 6. Ek journal, ek caps-set; Render par auto OFF.
 7. 3-4 hafte paper + 2 hafte micro-live ke metrics dashboard par.
 
@@ -193,7 +198,7 @@ ProTrader panel: execution mode badge (PAPER/LIVE, API/BROWSER), protection stat
 | Naked position (SL exchange par nahi) | protection-first rule + flatten-on-fail (Phase 4 — DEFERRED) |
 | Laptop sleep/crash/internet drop | native SL, dead-man alert, startup recovery, power-plan |
 | Browser DOM change | canary + selector overrides + auto-halt (Phase 6 — DEFERRED) |
-| Ollama slow / RAM pressure | veto-only role, queue=1, RAM governor (DONE v20.6) |
+| local engine slow / RAM pressure | veto-only role, queue=1, RAM governor (DONE v20.6) |
 | Overfitting (gate/weights tuning) | min 100 trades, out-of-sample, shadow compare |
 | Duplicate execution (Render + laptop) | leader lease (Phase 5 — DEFERRED) |
 | Signal edge hi na ho | Phase 7 calibration — data bolega |
@@ -207,7 +212,7 @@ ProTrader panel: execution mode badge (PAPER/LIVE, API/BROWSER), protection stat
 - [ ] Confirm `[selfimprove] v20.6 SELF-IMPROVEMENT ENGINE DISABLED by default` log line on boot.
 - [ ] Confirm `[ram-governor] v20.6 armed` log line.
 - [ ] Confirm `[ml-service] hf models DISABLED by default` log line.
-- [ ] Set `.env`: `LLM_LOCAL_ONLY=1`, `OLLAMA_MODEL=qwen3:8b`, `RAM_YELLOW_FREE_GB=3.5`, `RAM_RED_FREE_GB=2`.
+- [ ] Set `.env`: `LEGACY_LOCAL_ONLY=1`, `LEGACY_LOCAL_MODEL=qwen3:8b`, `RAM_YELLOW_FREE_GB=3.5`, `RAM_RED_FREE_GB=2`.
 - [ ] Paper mode me SAPTA 1 din chalao; check no `[selfimprove]` lines in console (loop disarmed).
 - [ ] Check CoinDcxTab: Self-Improvement Engine section GONE (panel unmounted).
 - [ ] Check the `sizing.test.ts` + `ramGovernor.test.ts` + `llmChainEnv.test.ts` green.

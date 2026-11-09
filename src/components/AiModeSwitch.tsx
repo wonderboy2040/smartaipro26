@@ -1,21 +1,22 @@
 // ============================================================
-// src/components/AiModeSwitch.tsx — v21.27 LOCAL / CLOUD / BOTH switch
+// src/components/AiModeSwitch.tsx — FreeLLMAPI intelligence profile
 // ------------------------------------------------------------
-// One site-wide engine mode, controlled from the header:
-//   LOCAL → local Ollama only (no cloud calls at all)
-//   CLOUD → OpenCode free models first (GLM scan / DeepSeek deep),
-//           then the local Ollama fallback. No paid APIs.
-//   BOTH  → OpenCode cloud AND local Ollama run in parallel; their
-//           verdicts are merged (dual-engine agree / conflict).
-// The server persists the choice (server/data/ai-mode.json) and
-// re-reads it on every AI call, so switching needs NO restart and
-// survives one. Scope: AI Council, deep analysis, global council,
-// borderline LLM validator (v1).
+// One site-wide routing profile, controlled from the header:
+//   SMART    → auto:smart    — deepest council / validator answers
+//   BALANCED → auto:balanced — quality/latency blend for desk agents
+//   FAST     → auto:fast     — quick scans / MTF guard seats
+// Every lane rides the local FreeLLMAPI router, which owns the
+// upstream provider keys and free-tier quotas. The server persists
+// the choice (server/data/ai-mode.json) and re-reads it on every AI
+// call, so switching needs NO restart and survives one. Scope: AI
+// Council, deep analysis, global council, borderline validator, desk
+// agents and the MTF AI guard.
 // ============================================================
 import { memo, useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../utils/api';
 
-type AiMode = 'local' | 'cloud' | 'both';
+type AiMode = 'smart' | 'balanced' | 'fast';
+const MODES: readonly AiMode[] = ['smart', 'balanced', 'fast'];
 
 interface AiModeStatus {
   mode: AiMode;
@@ -28,21 +29,25 @@ const SOURCE_LABEL: Record<string, string> = {
   runtime: 'runtime switch (applied now)',
   file: 'saved server/data/ai-mode.json',
   env: 'AI_MODE env seed',
-  'env-local-only': 'LLM_LOCAL_ONLY env seed',
+  'env-profile': 'FREELLMAPI_PROFILE env seed',
   default: 'safe default',
 };
 
 function modeTitle(mode: AiMode | null): string {
-  if (mode === 'both') {
-    return 'BOTH — OpenCode cloud AND local Ollama run in parallel on every AI call; their verdicts are merged (dual-engine agree/conflict). No paid APIs. Applies to AI Council, deep analysis, global council and the borderline validator.';
+  if (mode === 'smart') {
+    return 'SMART — FreeLLMAPI auto:smart. Highest-intelligence eligible model for the AI Council, deep analysis, global council, borderline validator and desk agents. Best accuracy, highest latency.';
   }
-  if (mode === 'cloud') {
-    return 'CLOUD — OpenCode free models first (GLM scan / DeepSeek deep), then local Ollama fallback. No paid APIs. Applies to AI Council, deep analysis, global council and the borderline validator.';
+  if (mode === 'balanced') {
+    return 'BALANCED — FreeLLMAPI auto:balanced. Quality/latency blend for desk agents and board scans; deep analysis still uses auto:smart.';
   }
-  if (mode === 'local') {
-    return 'LOCAL — local Ollama only. Zero cloud calls. Applies to AI Council, deep analysis, global council and the borderline validator.';
+  if (mode === 'fast') {
+    return 'FAST — FreeLLMAPI auto:fast. Quickest eligible model for scans and the MTF AI guard; deep analysis still uses auto:smart.';
   }
-  return 'AI engine mode — loading…';
+  return 'FreeLLMAPI intelligence profile — loading…';
+}
+
+function isMode(v: unknown): v is AiMode {
+  return v === 'smart' || v === 'balanced' || v === 'fast';
 }
 
 export const AiModeSwitch = memo(function AiModeSwitch() {
@@ -56,7 +61,7 @@ export const AiModeSwitch = memo(function AiModeSwitch() {
       const res = await apiFetch('/api/ai/mode', { signal: AbortSignal.timeout(8000) });
       if (!res.ok) { setFailed(true); return; }
       const d = await res.json().catch(() => null);
-      if (d?.mode === 'local' || d?.mode === 'cloud' || d?.mode === 'both') {
+      if (isMode(d?.mode)) {
         setStatus({
           mode: d.mode,
           source: String(d.source || ''),
@@ -86,7 +91,7 @@ export const AiModeSwitch = memo(function AiModeSwitch() {
         signal: AbortSignal.timeout(8000),
       });
       const d = await res.json().catch(() => null);
-      if (res.ok && d?.ok && (d.mode === 'local' || d.mode === 'cloud' || d.mode === 'both')) {
+      if (res.ok && d?.ok && isMode(d.mode)) {
         setStatus({
           mode: d.mode,
           source: String(d.source || 'runtime'),
@@ -108,17 +113,23 @@ export const AiModeSwitch = memo(function AiModeSwitch() {
   const mode = status?.mode ?? null;
   const source = status ? (SOURCE_LABEL[status.source] || status.source || 'unknown') : 'loading…';
   const persisted = status ? (status.persisted ? 'restart-safe (saved)' : 'NOT saved — read-only filesystem, runtime only') : '';
-  const title = `${modeTitle(mode)}${status ? `\nSource: ${source} · ${persisted}` : ''}${failed ? '\nStatus endpoint unreachable — last known mode shown.' : ''}`;
+  const title = `${modeTitle(mode)}${status ? `\nSource: ${source} · ${persisted}` : ''}${failed ? '\nStatus endpoint unreachable — last known profile shown.' : ''}`;
+
+  const activeClass = (m: AiMode) => m === 'smart'
+    ? 'bg-emerald-500/20 text-emerald-200 border border-emerald-400/40'
+    : m === 'balanced'
+      ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-400/40'
+      : 'bg-violet-500/20 text-violet-200 border border-violet-400/40';
 
   return (
     <div
       className="flex items-center gap-1 quantum-panel p-1 rounded-xl"
       role="group"
-      aria-label="AI engine mode"
+      aria-label="FreeLLMAPI intelligence profile"
       title={title}
     >
       <span className={`px-1 text-[9px] font-black font-mono ${failed ? 'text-red-400' : 'text-slate-500'}`}>AI</span>
-      {(['local', 'cloud', 'both'] as const).map(m => {
+      {MODES.map(m => {
         const active = mode === m;
         return (
           <button
@@ -130,11 +141,7 @@ export const AiModeSwitch = memo(function AiModeSwitch() {
             title={modeTitle(m)}
             className={`px-2 py-1 rounded-lg text-[9px] font-black font-mono tracking-wider transition-all disabled:opacity-40 ${
               active
-                ? m === 'both'
-                  ? 'bg-emerald-500/20 text-emerald-200 border border-emerald-400/40'
-                  : m === 'cloud'
-                    ? 'bg-cyan-500/20 text-cyan-200 border border-cyan-400/40'
-                    : 'bg-violet-500/20 text-violet-200 border border-violet-400/40'
+                ? activeClass(m)
                 : 'text-slate-500 hover:text-slate-300 hover:bg-white/[0.04] border border-transparent'
             }`}
           >

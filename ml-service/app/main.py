@@ -673,11 +673,11 @@ except Exception as _me_err:  # noqa: BLE001
 
 # ============================================================
 # v20.6 — HF models DISABLED by default on a local 16GB laptop setup.
-# Chronos-T5 (torch) + FinBERT (torch) compete with Ollama for RAM and
-# push the box into swap → event-loop freezes on the Node server side
-# (the very thing selfHeal flags). On a cloud box with abundant RAM,
-# set HF_MODELS_ENABLED=true to mount them; on a local Ollama-first
-# install, leave them off — the base LightGBM/sklearn ML service does
+# Chronos-T5 (torch) + FinBERT (torch) compete with the browser + Node
+# server for RAM and push the box into swap → event-loop freezes on the
+# Node server side (the very thing selfHeal flags). On a cloud box with
+# abundant RAM, set HF_MODELS_ENABLED=true to mount them; on a local
+# install, leave them off - the base LightGBM/sklearn ML service does
 # everything the trade-signal path actually reads.
 # ============================================================
 if os.environ.get("HF_MODELS_ENABLED", "false").lower() == "true":
@@ -688,7 +688,7 @@ if os.environ.get("HF_MODELS_ENABLED", "false").lower() == "true":
     except Exception as _hf_err:  # noqa: BLE001
         print(f"[ml-service] hf models NOT mounted (non-fatal): {_hf_err}")
 else:
-    print("[ml-service] hf models DISABLED by default (HF_MODELS_ENABLED not 'true') — base LightGBM/sklearn service only. Saves RAM for the local Ollama engine.")
+    print("[ml-service] hf models DISABLED by default (HF_MODELS_ENABLED not 'true') - base LightGBM/sklearn service only. Saves RAM for the local FreeLLMAPI gateway.")
 
 
 # ============================================================

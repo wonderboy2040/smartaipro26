@@ -27,6 +27,13 @@ vi.mock('../server/ai/eventGuard.js', () => ({
   eventGuardCheck: () => ({ action: 'allow' }),
 }));
 
+// Calendar/market-independent sizing: the real cross-desk risk brain fetches
+// live VIX/BTC and can halve the budget on a risk-off day. The mandate clamp
+// math under test must not depend on today's market regime.
+vi.mock('../server/ai/globalRisk.js', () => ({
+  globalRiskGate: async () => ({ veto: false, reason: null, sizeMul: 1, riskOff: false, heatPct: 0, heatCapPct: 6 }),
+}));
+
 vi.mock('../server/mcp/coindcx.js', () => ({
   coindcxPrivate: (...args) => mockPrivate(...args),
   coindcxConnected: () => mockConnected(),

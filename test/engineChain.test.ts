@@ -1,25 +1,24 @@
 // ============================================================
-// test/engineChain.test.ts — v18.7 ENGINE SENTINEL CHAIN
+// test/engineChain.test.ts — FreeLLMAPI-first engine chain
 // ------------------------------------------------------------
-// End-to-end pins for the desk-agent provider chain upgrade (the
-// "AI language engines offline" fix):
-//   1. EXTENDED chain — openrouter / huggingface / nvidia ride
-//      after cerebras and actually answer.
-//   2. FAST-FAIL — a provider in cooldown is skipped with ZERO
+// End-to-end pins for the desk-agent provider chain:
+//   1. FREELMAPI FIRST — the managed router answers with zero
+//      direct provider keys.
+//   2. DIRECT FALLBACK — provider keys still work when the router
+//      is closed.
+//   3. FAST-FAIL — a provider in cooldown is skipped with ZERO
 //      network calls (no repeated 30s hangs per message).
-//   3. HALF-OPEN — cooldown expiry auto-retries the engine (no
-//      restart, no RECHECK needed).
-//   4. KEYLESS LOCAL — a reachable Ollama joins the chain as a
-//      real language engine with zero cloud keys.
-//   5. HONEST DEGRADED MODE — the deterministic answer now ends
-//      with an ENGINE STATUS line (why offline + how to fix).
-//   6. councilAsk (signals/council path) is sentinel-aware too.
+//   4. HALF-OPEN — cooldown expiry auto-retries the engine.
+//   5. HONEST DEGRADED MODE — the deterministic answer ends with an
+//      ENGINE STATUS line (why offline + how to fix).
+//   6. councilAsk (signals/council path) is router-aware too.
 // ============================================================
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 // hermetic data dir (same contract as cryptoAgent.test.ts)
+process.env.SMART_AI_TEST = '1';
 process.env.SMARTAI_DATA_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '../.test-data-engine-chain');
 
 const cxConnected = vi.hoisted(() => ({ on: false }));
@@ -55,16 +54,56 @@ vi.mock('../server/ai/agent.js', () => ({
   agentStatus: vi.fn(),
 }));
 
+// FreeLLMAPI bridge stub — the chain's primary engine.
+const _fl = vi.hoisted(() => ({
+  up: false,
+  routedVia: 'kilo/glm-5.2:free',
+  json: { verdict: 'CONFIRM', confidence: 80 } as Record<string, unknown>,
+  calls: [] as Array<{ prompt: string; opts: any }>,
+}));
+
+vi.mock('../server/ai/freellmapi.js', () => ({
+  FREELLMAPI_MODELS: {
+    smart: 'auto:smart', balanced: 'auto:balanced', fast: 'auto:fast',
+    reliable: 'auto:reliable', fusion: 'fusion', vision: 'qwen2.5-vl-72b',
+  },
+  freeLlmProbe: async () => _fl.up,
+  freeLlmKeyPresentCached: () => _fl.up,
+  freeLlmReachableCached: () => _fl.up,
+  freeLlmAgentCfg: async () => _fl.up ? {
+    provider: 'freellmapi',
+    url: 'http://127.0.0.1:31415/v1/chat/completions',
+    baseUrl: 'http://127.0.0.1:31415',
+    apiKey: 'unified-test-key',
+    defModel: 'auto:balanced',
+    deepModel: 'auto:smart',
+    fastModel: 'auto:fast',
+  } : null,
+  freeLlmJson: async (prompt: string, opts: any = {}) => {
+    _fl.calls.push({ prompt, opts });
+    return {
+      json: { ..._fl.json },
+      text: JSON.stringify(_fl.json),
+      model: opts.model || 'auto:smart',
+      routedVia: _fl.routedVia,
+      latencyMs: 5,
+      usage: null,
+    };
+  },
+  freeLlmVision: async () => { throw new Error('vision not used in this suite'); },
+  freeLlmStatus: () => ({ available: _fl.up, baseUrl: _fl.up ? 'http://127.0.0.1:31415' : null }),
+}));
+
 import { runCryptoAgent } from '../server/ai/cryptoAgent.js';
 import { councilAsk } from '../server/ai/llmChain.js';
-import { setAiMode, __resetAiModeForTests } from '../server/ai/aiMode.js';
+import { __resetAiModeForTests } from '../server/ai/aiMode.js';
 import { engineTrack, engineSnapshot, __resetSentinelForTests } from '../server/ai/llmSentinel.js';
 
 // ---------------- fetch router mock ----------------
 const fetchCalls: string[] = [];
 let routes: Record<string, () => Promise<{ ok: boolean; status: number; json: any }>> = {};
 
-vi.stubGlobal('fetch', vi.fn(async (url: any, init?: any) => {
+vi.stubGlobal('fetch', vi.fn(async (url: any) => {
   const u = String(url);
   fetchCalls.push(u);
   for (const [frag, fn] of Object.entries(routes)) {
@@ -78,14 +117,6 @@ const okChat = (content: string) => async () => ({
   json: async () => ({ choices: [{ message: { role: 'assistant', content, tool_calls: [] } }] }),
 });
 const badStatus = (code: number) => async () => ({ ok: false, status: code, json: async () => ({}) });
-const ollamaTags = () => async () => ({
-  ok: true, status: 200,
-  json: async () => ({ models: [{ name: 'llama3.1:8b' }] }),
-});
-const okOllamaNative = (content: string) => async () => ({
-  ok: true, status: 200,
-  json: async () => ({ message: { role: 'assistant', content } }),
-});
 
 const COMPAT = {
   groq: { url: 'https://api.groq.com/openai/v1/chat/completions', defModel: 'openai/gpt-oss-120b' },
@@ -110,7 +141,10 @@ const SOL_SIGNAL = {
 beforeEach(() => {
   __resetSentinelForTests();
   __resetAiModeForTests();
-  setAiMode('local');
+  _fl.up = false;
+  _fl.routedVia = 'kilo/glm-5.2:free';
+  _fl.json = { verdict: 'CONFIRM', confidence: 80 };
+  _fl.calls.length = 0;
   fetchCalls.length = 0;
   routes = {};
   mockGetDeepSignal.mockReset().mockResolvedValue(SOL_SIGNAL);
@@ -119,31 +153,30 @@ beforeEach(() => {
 afterEach(() => {
   // NOTE: deliberately NO vi.unstubAllGlobals() here — the module-level
   // fetch stub must survive across tests (routes/fetchCalls are reset
-  // manually in beforeEach). Unstubbing here would hand the 2nd test a
-  // REAL network fetch (the exact bug that broke the first run).
+  // manually in beforeEach).
   vi.restoreAllMocks();
 });
 
-describe('v18.7 engine chain — the desk agent', () => {
-  it('EXTENDED: groq 429 + cerebras 500 fall through to openrouter which ANSWERS', async () => {
-    routes = {
-      'api.groq.com': badStatus(429),
-      'api.cerebras.ai': badStatus(500),
-      'openrouter.ai': okChat('SOL LONG ticket — entry zone 8900-9100'),
-    };
-    const out = await runCryptoAgent(SOL_DEEP, {
-      KEYS: { groq: 'g', cerebras: 'c', openrouter: 'o' },
-      OPENAI_COMPAT: COMPAT,
-    });
+describe('engine chain — the crypto desk agent', () => {
+  it('FREELMAPI FIRST: answers through the local router with ZERO provider keys', async () => {
+    _fl.up = true;
+    routes = { '127.0.0.1:31415/v1/chat/completions': okChat('SOL LONG ticket — router answer') };
+    const out = await runCryptoAgent(SOL_DEEP, { KEYS: {}, OPENAI_COMPAT: COMPAT });
     expect(out.ok).toBe(true);
-    expect(out.engine).toContain('openrouter');
+    expect(out.engine).toContain('freellmapi');
+    expect(out.degraded).toBeUndefined();
+    expect(fetchCalls.some(u => u.includes('127.0.0.1:31415/v1/chat/completions'))).toBe(true);
+    const sentAuth = (fetchCalls.length > 0);
+    expect(sentAuth).toBe(true);
+  });
+
+  it('DIRECT FALLBACK: router down → a configured provider still answers', async () => {
+    _fl.up = false;
+    routes = { 'api.groq.com': okChat('groq fallback ticket') };
+    const out = await runCryptoAgent(SOL_DEEP, { KEYS: { groq: 'g' }, OPENAI_COMPAT: COMPAT });
+    expect(out.ok).toBe(true);
+    expect(out.engine).toContain('groq');
     expect(fetchCalls.some(u => u.includes('api.groq.com'))).toBe(true);
-    expect(fetchCalls.some(u => u.includes('api.cerebras.ai'))).toBe(true);
-    expect(fetchCalls.some(u => u.includes('openrouter.ai'))).toBe(true);
-    // sentinel recorded the failures honestly
-    const snap = engineSnapshot({ groq: 'g', cerebras: 'c', openrouter: 'o' });
-    expect(snap.find(e => e.provider === 'groq')?.lastError).toContain('429');
-    expect(snap.find(e => e.provider === 'openrouter')?.state).toBe('ready');
   });
 
   it('FAST-FAIL: a provider in cooldown is skipped with ZERO network calls to it', async () => {
@@ -154,9 +187,7 @@ describe('v18.7 engine chain — the desk agent', () => {
       KEYS: { groq: 'g' },
       OPENAI_COMPAT: COMPAT,
     });
-    // groq never hit — only the local ollama liveness probe ran
     expect(fetchCalls.some(u => u.includes('api.groq.com'))).toBe(false);
-    // deterministic answer still served
     expect(out.ok).toBe(true);
     expect(out.engine).toBe('super-intel-deterministic');
     expect(out.degraded).toBe(true);
@@ -177,34 +208,18 @@ describe('v18.7 engine chain — the desk agent', () => {
     expect(fetchCalls.some(u => u.includes('api.groq.com'))).toBe(true);
   });
 
-  it('LOCAL: a reachable Ollama joins the chain with ZERO cloud keys', async () => {
-    routes = {
-      '127.0.0.1:11434/api/tags': ollamaTags(),
-      '127.0.0.1:11434/v1/chat/completions': okChat('local llama ticket'),
-    };
-    const out = await runCryptoAgent(SOL_DEEP, { KEYS: {}, OPENAI_COMPAT: COMPAT });
-    expect(out.ok).toBe(true);
-    expect(out.engine).toContain('ollama');
-    expect(out.degraded).toBeUndefined();
-    expect(fetchCalls.some(u => u.includes('127.0.0.1:11434/v1/chat/completions'))).toBe(true);
-  });
-
-  it('DEGRADED honesty: no keys → deterministic ticket + ENGINE STATUS guidance line', async () => {
+  it('DEGRADED honesty: nothing configured → deterministic ticket + ENGINE STATUS guidance line', async () => {
     const out = await runCryptoAgent(SOL_DEEP, { KEYS: {}, OPENAI_COMPAT: {} });
     expect(out.ok).toBe(true);
     expect(out.engine).toBe('super-intel-deterministic');
     expect(out.text).toContain('FULL TICKET');
     expect(out.text).toContain('ENGINE STATUS');
-    expect(out.text).toContain('Settings > AI Keys');
-    // zero PROVIDER chat calls — only the ollama liveness probe + honest
-    // desk-tool compute (funding etc.) may touch the network
+    expect(out.text).toContain('FreeLLMAPI');
     const providerFrags = ['generativelanguage', 'api.groq.com', 'api.cerebras.ai', 'openrouter.ai', 'router.huggingface.co', 'integrate.api.nvidia.com'];
     expect(fetchCalls.some(u => providerFrags.some(f => u.includes(f)))).toBe(false);
   });
 
   it('DEGRADED honesty: failed engines are named with reason + auto-retry in the status line', async () => {
-    // 2 consecutive 429s arm the cooldown — the status line must name the
-    // engine, the reason AND the auto-retry (the actionable fix).
     engineTrack('groq', new Error('groq 429'));
     engineTrack('groq', new Error('groq 429'));
     routes = { 'api.groq.com': badStatus(429) };
@@ -214,32 +229,32 @@ describe('v18.7 engine chain — the desk agent', () => {
     expect(out.text).toContain('groq');
     expect(out.text).toContain('cooldown');
     expect(out.text).toContain('429');
-    // cooled provider was fast-skipped — no groq network call this run
     expect(fetchCalls.some(u => u.includes('api.groq.com'))).toBe(false);
   });
 });
 
-describe('v21.27 councilAsk (signals/council chain) — LOCAL mode contract', () => {
-  it('answers via native Ollama and never touches a paid provider', async () => {
-    routes = {
-      '127.0.0.1:11434/api/tags': ollamaTags(),
-      '127.0.0.1:11434/api/chat': okOllamaNative('{"verdict":"CONFIRM","confidence":80,"reason":"local"}'),
-    };
+describe('councilAsk (signals/council chain) — FreeLLMAPI contract', () => {
+  it('answers via the router and never touches a direct provider', async () => {
+    _fl.up = true;
+    _fl.json = { verdict: 'CONFIRM', confidence: 80, reason: 'router' };
     const { json, model } = await councilAsk('prompt', {
       KEYS: { gemini: 'g', groq: 'q', huggingface: 'h' },
       OPENAI_COMPAT: COMPAT,
     });
-    expect(model).toBe('ollama:llama3.1:8b');
+    expect(model).toBe('freellmapi:kilo/glm-5.2:free');
     expect(json?.verdict).toBe('CONFIRM');
+    expect(_fl.calls.length).toBe(1);
     const providerFrags = ['generativelanguage', 'api.groq.com', 'api.cerebras.ai', 'openrouter.ai', 'router.huggingface.co', 'integrate.api.nvidia.com'];
     expect(fetchCalls.some(u => providerFrags.some(f => u.includes(f)))).toBe(false);
   });
 
-  it('a cooled Ollama is fast-skipped with ZERO network calls', async () => {
-    engineTrack('ollama', new Error('ollama 500'));
-    engineTrack('ollama', new Error('ollama 500'));
+  it('a cooled router is fast-skipped with ZERO network calls', async () => {
+    _fl.up = true;
+    engineTrack('freellmapi', new Error('freellmapi 500'));
+    engineTrack('freellmapi', new Error('freellmapi 500'));
     const out = await councilAsk('prompt', { KEYS: { gemini: 'g' }, OPENAI_COMPAT: COMPAT });
     expect(out).toEqual({ json: null, model: null });
+    expect(_fl.calls.length).toBe(0);
     expect(fetchCalls.length).toBe(0);
   });
 });

@@ -4,8 +4,8 @@
 // v21.23.1/v21.23.2 ne MTFDualBoardPanel header + mtfDualBoard
 // server ladder honest kiya, par un-swept paths par fabrications
 // zinda reh gaye the:
-//   1. Row-level OLLAMA chip raw `verdict` ("3/3 OLLAMA AI LOCK")
-//      render karta tha — Ollama OFFLINE ho tab bhi — plus
+//   1. Row-level AI-GUARD chip raw `verdict` ("3/3 FREELMAPI AI LOCK")
+//      render karta tha — AI offline ho tab bhi — plus
 //      `latencyMs ?? 12` fabricated latency.
 //   2. Telegram board rows: `?? 88` winrate + guessed alignment +
 //      raw verdict tag.
@@ -52,13 +52,13 @@ describe('v21.23.3 — honesty: telegram MTF board fabrications removed', () => 
     const txt = formatBoard(board([row({
       winRatePct: 95,
       worldIndicators: { alignedCount: 9, aligned8Count: 9 },
-      ollamaTrio: { verdict: '3/3 OLLAMA AI LOCK', honestLabel: 'Rule-Based Guard 3/3', ruleBasedGuard: true },
+      aiGuard: { verdict: '3/3 FREELMAPI AI LOCK', honestLabel: 'Rule-Based Guard 3/3', ruleBasedGuard: true },
     })]), { title: 'TEST BOARD' });
     expect(txt).toContain('BTC');
     // The rebuilt formatter renders signal/order state + plan only.
     expect(txt).not.toContain('Winrate');
     expect(txt).not.toContain('95%');
-    expect(txt).not.toContain('OLLAMA AI LOCK');
+    expect(txt).not.toContain('FREELMAPI AI LOCK');
     expect(txt).not.toMatch(/\d+\/8 Inst/);
     expect(txt).not.toMatch(/\d+\/10 Top Ind/);
   });
@@ -84,13 +84,13 @@ describe('v21.23.3 — honesty: telegram MTF board fabrications removed', () => 
 });
 
 describe('v21.23.3 — honesty: UI/server source pins', () => {
-  it('MTFDualBoardPanel OLLAMA chip consumes honestLabel + honest latency (no ?? 12)', () => {
+  it('MTFDualBoardPanel AI-GUARD chip consumes honestLabel + honest latency (no ?? 12)', () => {
     const src = readSrc('src/components/aitrading/MTFDualBoardPanel.tsx');
-    expect(src).toContain('r.ollamaTrio.honestLabel || r.ollamaTrio.verdict');
+    expect(src).toContain('r.aiGuard.honestLabel || r.aiGuard.verdict');
     expect(src).not.toContain('latencyMs ?? 12');
   });
 
-  it('useAITrading ollamaTrio type carries honest fields', () => {
+  it('useAITrading aiGuard type carries honest fields', () => {
     const src = readSrc('src/components/aitrading/useAITrading.ts');
     expect(src).toMatch(/honestLabel\?: string/);
     expect(src).toMatch(/ruleBasedGuard\?: boolean/);

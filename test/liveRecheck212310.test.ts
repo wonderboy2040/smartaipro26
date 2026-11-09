@@ -62,7 +62,8 @@ import { isMetalsBase } from '../server/ai/futures.js';
 
 import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const readSrc = (p: string) => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
+// Normalize CRLF so multi-line source pins match on '\n' boundaries.
+const readSrc = (p: string) => fs.readFileSync(path.join(__dirname, '..', p), 'utf8').replace(/\r\n/g, '\n');
 const ROUTES_SRC = readSrc('server/ai/routes.js');
 const MTF_SRC = readSrc('server/ai/mtf.js');
 const SIGNALS_SRC = readSrc('server/ai/signals.js');

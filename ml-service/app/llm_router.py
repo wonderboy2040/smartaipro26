@@ -1,14 +1,19 @@
 """
-MULTI-PROVIDER LLM ROUTER — Free, Auto-Failover, Effectively Unlimited
-Rotates across free providers. If all fail, returns None (caller uses Quant Brain text).
+FREELMAPI-FIRST LLM ROUTER — free, auto-failover, effectively unlimited
+The local FreeLLMAPI desktop gateway is the PRIMARY engine. It owns the
+upstream provider keys, quotas and smart routing, so the ml-service needs
+no provider keys of its own. Direct free-tier providers remain as a last
+resort if the router is not running (or has no eligible model).
 
-Providers (all free tiers, no credit card):
-  1. Gemini   — 1,500 req/day free
-  2. Groq     — fast, large daily token budget
-  3. OpenRouter — rotating free models
-  4. Cerebras — free dev tier, very fast
-  5. HuggingFace — free rate-limited
-  6. Ollama   — self-host, truly keyless (localhost)
+Providers:
+  1. FreeLLMAPI — local OpenAI-compatible gateway, auto:smart routing
+  2. Gemini     — 1,500 req/day free        (fallback, needs GEMINI_API_KEY)
+  3. Groq       — fast, large daily budget  (fallback, needs GROQ_API_KEY)
+  4. OpenRouter — rotating free models      (fallback, needs OPENROUTER_API_KEY)
+  5. Cerebras   — free dev tier, very fast  (fallback, needs CEREBRAS_API_KEY)
+  6. HuggingFace— free rate-limited         (fallback, needs HF_API_KEY)
+
+If every engine fails, returns None (caller uses Quant Brain text).
 """
 
 import os
@@ -16,6 +21,7 @@ import re
 import time
 import json
 import logging
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("llm_router")
@@ -23,7 +29,22 @@ logger = logging.getLogger("llm_router")
 # ============================================================
 # PROVIDER CONFIG
 # ============================================================
+DEFAULT_FREELLMAPI_URL = "http://127.0.0.1:31415"
+FREELLMAPI_MODELS = {
+    "smart": "auto:smart",
+    "balanced": "auto:balanced",
+    "fast": "auto:fast",
+}
+
 PROVIDERS = [
+    {
+        "name": "freellmapi",
+        "url": "{base}/v1/chat/completions",
+        "model": "auto:smart",
+        "env_key": "FREELLMAPI_API_KEY",  # optional — auto-discovered from the desktop DB
+        "format": "openai",
+        "local": True,
+    },
     {
         "name": "gemini",
         "url": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
@@ -59,13 +80,6 @@ PROVIDERS = [
         "env_key": "HF_API_KEY",
         "format": "openai",
     },
-    {
-        "name": "ollama",
-        "url": "http://localhost:11434/api/chat",
-        "model": "llama3.1:8b",
-        "env_key": None,
-        "format": "ollama",
-    },
 ]
 
 # Health tracking per provider
@@ -73,14 +87,119 @@ _provider_health = {}
 for p in PROVIDERS:
     _provider_health[p["name"]] = {"failures": 0, "last_failure": 0, "cooldown_ms": 30000}
 
+_freellmapi_key_cache = {"value": None, "at": 0.0}
+_FREELLMAPI_KEY_TTL_SEC = 300.0
+
+
+# ============================================================
+# FREELMAPI DISCOVERY
+# ============================================================
+def _clean_base(url: str) -> str:
+    return str(url or "").strip().rstrip("/").removesuffix("/v1")
+
+
+def _config_dirs() -> list:
+    dirs = []
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        dirs.append(Path(appdata) / "FreeLLMAPI")
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    if xdg:
+        dirs.append(Path(xdg) / "FreeLLMAPI")
+    home = Path.home()
+    dirs.extend([
+        home / ".config" / "FreeLLMAPI",
+        home / "Library" / "Application Support" / "FreeLLMAPI",
+        home / "AppData" / "Roaming" / "FreeLLMAPI",
+    ])
+    # de-dupe while preserving order
+    seen, out = set(), []
+    for d in dirs:
+        key = str(d)
+        if key not in seen:
+            seen.add(key)
+            out.append(d)
+    return out
+
+
+def _freellmapi_base() -> str:
+    """FREELLMAPI_URL wins, then the desktop config.json port, then 31415."""
+    env_url = os.environ.get("FREELLMAPI_URL") or os.environ.get("FREELLMAPI_BASE_URL")
+    if env_url:
+        return _clean_base(env_url)
+    for d in _config_dirs():
+        try:
+            cfg = json.loads((d / "config.json").read_text(encoding="utf-8"))
+            port = int(cfg.get("port") or 0)
+            if port > 0:
+                return f"http://127.0.0.1:{port}"
+        except Exception:
+            continue
+    return DEFAULT_FREELLMAPI_URL
+
+
+def _read_db_key(db_path: Path) -> str:
+    try:
+        import sqlite3
+        uri = f"file:{db_path.as_posix()}?mode=ro"
+        con = sqlite3.connect(uri, uri=True, timeout=2.0)
+        try:
+            row = con.execute(
+                "SELECT value FROM settings WHERE key = 'unified_api_key'"
+            ).fetchone()
+            return str(row[0]).strip() if row and row[0] else ""
+        finally:
+            con.close()
+    except Exception:
+        return ""
+
+
+def _freellmapi_key() -> str:
+    """Env key wins; otherwise read settings.unified_api_key from freeapi.db."""
+    now = time.time()
+    if _freellmapi_key_cache["value"] is not None and now - _freellmapi_key_cache["at"] < _FREELLMAPI_KEY_TTL_SEC:
+        return _freellmapi_key_cache["value"]
+    key = (os.environ.get("FREELLMAPI_API_KEY") or "").strip()
+    if not key:
+        explicit = os.environ.get("FREELLMAPI_DB_PATH") or os.environ.get("FREEAPI_DB_PATH")
+        candidates = [Path(explicit)] if explicit else []
+        candidates.extend(d / "freeapi.db" for d in _config_dirs())
+        candidates.extend([Path.cwd() / "data" / "freeapi.db", Path.cwd() / "server" / "data" / "freeapi.db"])
+        for db in candidates:
+            try:
+                if db.is_file():
+                    key = _read_db_key(db)
+                    if key:
+                        break
+            except Exception:
+                continue
+    _freellmapi_key_cache["value"] = key
+    _freellmapi_key_cache["at"] = now
+    return key
+
+
+def _freellmapi_model() -> str:
+    """smart (default) → auto:smart, balanced → auto:balanced, fast → auto:fast."""
+    raw = (os.environ.get("FREELLMAPI_PROFILE") or os.environ.get("AI_MODE") or "smart").strip().lower()
+    return FREELLMAPI_MODELS.get(raw, FREELLMAPI_MODELS["smart"])
+
+
+def _provider_url(provider: dict) -> str:
+    url = provider["url"]
+    if "{base}" in url:
+        url = url.format(base=_freellmapi_base())
+    if "{model}" in url:
+        url = url.format(model=provider["model"])
+    return url
+
 
 def _is_provider_available(name: str) -> bool:
-    """Check if a provider has its key configured (or is local like Ollama)."""
+    """Check if a provider can be tried (FreeLLMAPI is local; others need a key)."""
     for p in PROVIDERS:
         if p["name"] != name:
             continue
-        if p["env_key"] is None:
-            return True  # Ollama — always try
+        if p.get("local"):
+            return True  # FreeLLMAPI — always try the local gateway
         return bool(os.environ.get(p["env_key"]))
     return False
 
@@ -131,8 +250,9 @@ def _call_openai_compat(provider: dict, system_prompt: str, user_prompt: str, ke
     if provider["name"] == "openrouter":
         headers["HTTP-Referer"] = "https://smartai1.onrender.com"
 
+    model = _freellmapi_model() if provider["name"] == "freellmapi" else provider["model"]
     payload = json.dumps({
-        "model": provider["model"],
+        "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -141,8 +261,9 @@ def _call_openai_compat(provider: dict, system_prompt: str, user_prompt: str, ke
         "max_tokens": 4096,
     }).encode("utf-8")
 
-    req = urllib.request.Request(provider["url"], data=payload, headers=headers)
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    timeout = 120 if provider["name"] == "freellmapi" else 30
+    req = urllib.request.Request(_provider_url(provider), data=payload, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read())
         text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
         return text.strip() if text and len(text.strip()) >= 5 else None
@@ -172,32 +293,15 @@ def _call_hf(provider: dict, system_prompt: str, user_prompt: str, key: str) -> 
         return text.strip() if text and len(text.strip()) >= 5 else None
 
 
-def _call_ollama(provider: dict, system_prompt: str, user_prompt: str) -> Optional[str]:
-    payload = json.dumps({
-        "model": provider["model"],
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "stream": False,
-    }).encode("utf-8")
-
-    req = urllib.request.Request(provider["url"], data=payload, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        data = json.loads(resp.read())
-        text = data.get("message", {}).get("content", "")
-        return text.strip() if text and len(text.strip()) >= 5 else None
-
-
 # ============================================================
 # MAIN ROUTER
 # ============================================================
 def ask_llm(system_prompt: str, user_prompt: str) -> Optional[str]:
     """
-    Try each provider in order. Return first successful response.
-    If all fail, return None — caller should use quant_brain.brain_to_text().
+    Try each provider in order (FreeLLMAPI first). Return first successful
+    response. If all fail, return None — caller should use
+    quant_brain.brain_to_text().
     """
-    import random
     for provider in PROVIDERS:
         name = provider["name"]
 
@@ -206,14 +310,17 @@ def ask_llm(system_prompt: str, user_prompt: str) -> Optional[str]:
         if _is_in_cooldown(name):
             continue
 
-        key = os.environ.get(provider["env_key"]) if provider["env_key"] else None
+        if name == "freellmapi":
+            key = _freellmapi_key()
+            model_label = _freellmapi_model()
+        else:
+            key = os.environ.get(provider["env_key"]) if provider["env_key"] else None
+            model_label = provider["model"]
 
         try:
-            logger.info(f"  🤖 Trying {name}...")
+            logger.info(f"  🤖 Trying {name} ({model_label})...")
             if provider["format"] == "gemini":
                 text = _call_gemini(provider, system_prompt, user_prompt, key)
-            elif provider["format"] == "ollama":
-                text = _call_ollama(provider, system_prompt, user_prompt)
             elif provider["format"] == "hf":
                 text = _call_hf(provider, system_prompt, user_prompt, key)
             else:
@@ -244,9 +351,10 @@ def get_provider_status() -> list:
             "name": name,
             "available": available,
             "key_set": bool(os.environ.get(provider["env_key"])) if provider["env_key"] else True,
-            "model": provider["model"],
+            "model": _freellmapi_model() if name == "freellmapi" else provider["model"],
             "failures": health["failures"],
             "in_cooldown": _is_in_cooldown(name),
+            **({"base_url": _freellmapi_base()} if name == "freellmapi" else {}),
         })
     return statuses
 

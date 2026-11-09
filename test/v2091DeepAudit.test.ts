@@ -455,11 +455,13 @@ describe('M. data & LLM robustness', () => {
     expect(src.data).toMatch(/indicatorsDegraded/);
     expect(src.data).toMatch(/const S = \(v\) => \(scale != null && v != null \? v \* scale : null\);/);
   });
-  it('llmChain: mode-aware OpenCode→Ollama leg (no paid providers), HTTP errors status-coded', () => {
-    // v21.27 LOCAL/CLOUD switch: paid providers removed from this chain.
-    expect(src.llmChain).toContain("import { getAiMode } from './aiMode.js'");
-    expect(src.llmChain).toContain('askOpenCode');
-    expect(src.llmChain).toMatch(/throw new Error\(`ollama http \$\{r\.status\}`\);/);
+  it('llmChain: FreeLLMAPI-only chain (no paid providers), HTTP errors status-coded', () => {
+    // The local router owns upstream keys; this chain never calls a provider directly.
+    expect(src.llmChain).toContain("from './aiMode.js'");
+    expect(src.llmChain).toContain('getAiMode');
+    expect(src.llmChain).toContain('freeLlmJson');
+    expect(src.llmChain).toContain('freeLlmVision');
+    expect(src.llmChain).not.toContain('spawn(');
     expect(src.llmChain).not.toMatch(/generativelanguage\.googleapis\.com/);
     expect(src.llmChain).not.toMatch(/api\.groq\.com|api\.cerebras\.ai|openrouter\.ai/);
   });

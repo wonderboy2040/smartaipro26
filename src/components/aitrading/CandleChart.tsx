@@ -63,9 +63,10 @@ export const CandleChart = memo(function CandleChart({
   const [tf, setTf] = useState<Tf>((TFS as readonly string[]).includes(defaultTf) ? defaultTf : '15m');
   const [candles, setCandles] = useState<Candle[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  // v21.0 VISION SEAT — local Ollama vision model (qwen2.5vl) chart
-  // screenshot analysis state. svgWrapRef se SVG ko PNG me render karke
-  // /api/ai/vision-check ko bhejte hain, verdict yahin dikhta hai.
+  // VISION SEAT — FreeLLMAPI pinned multimodal model (qwen2.5-vl-72b)
+  // chart screenshot analysis state. svgWrapRef se SVG ko PNG me
+  // render karke /api/ai/vision-check ko bhejte hain, verdict yahin
+  // dikhta hai.
   const svgWrapRef = useRef<SVGSVGElement | null>(null);
   const [vision, setVision] = useState<VisionVerdict | null>(null);
   const [visionBusy, setVisionBusy] = useState(false);
@@ -150,10 +151,10 @@ export const CandleChart = memo(function CandleChart({
   const lvlColor = (name: string) => name === 'SL' ? '#f87171' : name === 'ENTRY' ? '#e2e8f0'
     : name === 'LTP' ? '#fbbf24' : '#34d399';
 
-  // v21.0 VISION AI — SVG ko PNG me raster karke local Ollama vision
-  // model (qwen2.5vl:7b) ko bhejo. serializeSvg → blob URL → canvas →
+  // VISION AI — SVG ko PNG me raster karke FreeLLMAPI ke pinned vision
+  // model ko bhejo. serializeSvg → blob URL → canvas →
   // toDataURL('image/png') → POST /api/ai/vision-check. 120s timeout —
-  // 16GB CPU pe vision call 20-40s lagta hai.
+  // remote vision routing can take a few seconds.
   const runVisionCheck = useCallback(async () => {
     const svgEl = svgWrapRef.current;
     if (!svgEl || visionBusy) return;
@@ -227,7 +228,7 @@ export const CandleChart = memo(function CandleChart({
         {!loading && err && <span className="text-[9px] text-amber-500/80" title={err}>⚠ {err}</span>}
         {candles && <span className="ml-auto text-[9px] text-slate-600 font-mono">{candles.length} bars · {tf} · refresh 60s</span>}
         <button onClick={runVisionCheck} disabled={visionBusy || !view}
-          title="👁 Vision AI — chart screenshot ko local Ollama vision model (qwen2.5vl) se analyze karo"
+          title="👁 Vision AI — chart screenshot ko FreeLLMAPI ke pinned multimodal model (qwen2.5-vl-72b) se analyze karo"
           className={`px-1.5 py-0.5 rounded text-[9px] font-black border ${visionBusy ? 'bg-slate-800/40 text-slate-500 border-slate-700/40' : 'bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-400/40 hover:bg-fuchsia-500/25'}`}>
           {visionBusy ? '👁 analyzing…' : '👁 Vision AI'}
         </button>

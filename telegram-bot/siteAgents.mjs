@@ -322,14 +322,14 @@ function fmtMtfRowLine(r, defaultCcy = 'USDT') {
   const pakkaTag = (r.directionVerified || r.worldIndicators?.directionVerified) && (r.side === 'LONG' || r.side === 'SHORT')
     ? ` · 🔒 <b>PAKKA ${esc(r.side)}</b>`
     : '';
-  // honestLabel pehle — raw verdict offline "3/3 OLLAMA AI LOCK" jhooth bol sakta hai
-  const ollamaLabel = r.ollamaTrio?.honestLabel || r.ollamaTrio?.verdict || '';
-  const ollamaTag = ollamaLabel ? ` · 🧠 ${esc(ollamaLabel)}` : '';
+  // honestLabel pehle — raw verdict offline fabricated "AI LOCK" claim kar sakta hai
+  const guardLabel = r.aiGuard?.honestLabel || r.aiGuard?.verdict || '';
+  const guardTag = guardLabel ? ` · 🧠 ${esc(guardLabel)}` : '';
   const entry = r.plan?.entry != null ? `${pfx}${r2(r.plan.entry)}` : '—';
   const sl = r.plan?.stopLoss != null ? `${pfx}${r2(r.plan.stopLoss)}` : '—';
   const t1 = r.plan?.t1 != null ? `${pfx}${r2(r.plan.t1)}` : '—';
   const t2 = r.plan?.t2 != null ? `${pfx}${r2(r.plan.t2)}` : '—';
-  return `${tierIcon} <b>${esc(r.symbol)}</b> ${sideIcon} <b>${esc(r.side || 'WATCH')}</b>${pakkaTag} · Score <b>${r.superScore ?? 0}</b> (${esc(r.tier)}) · ${winTag} (${indTag})${ollamaTag}\n   🎯 Entry <b>${entry}</b> · 🛑 SL <b>${sl}</b> · 🏆 T1 <b>${t1}</b> · T2 <b>${t2}</b>`;
+  return `${tierIcon} <b>${esc(r.symbol)}</b> ${sideIcon} <b>${esc(r.side || 'WATCH')}</b>${pakkaTag} · Score <b>${r.superScore ?? 0}</b> (${esc(r.tier)}) · ${winTag} (${indTag})${guardTag}\n   🎯 Entry <b>${entry}</b> · 🛑 SL <b>${sl}</b> · 🏆 T1 <b>${t1}</b> · T2 <b>${t2}</b>`;
 }
 
 export function formatMtfDualBoardLines(board, { label = '⚡ MTF DUAL-TIMEFRAME SIGNAL BOARD (v21.22.0)', max = 6 } = {}) {
@@ -342,7 +342,7 @@ export function formatMtfDualBoardLines(board, { label = '⚡ MTF DUAL-TIMEFRAME
   const lines = [
     `<b>${esc(label)}</b>`,
     `⏱ Mode: <b>${esc(board.modeLabel || board.mode || '15m Deep + 5m Action')}</b> · ⚡ 24×7 Direct Feed (6s TTL)`,
-    `🏆 8 Institutional Indicators (SMC · LiqSweep · VolProfile · FVG · ICT · EMA · Sup/Dem · PriceAction) + 10 World Top · 🧠 3-Model Local Ollama AI`,
+    `🏆 8 Institutional Indicators (SMC · LiqSweep · VolProfile · FVG · ICT · EMA · Sup/Dem · PriceAction) + 10 World Top · 🧠 3-Seat FreeLLMAPI AI Guard`,
     '━━━━━━━━━━━━━━━━━━━━━━━',
   ];
   if (rows.length) {

@@ -40,6 +40,19 @@ vi.mock('../server/ai/coindcxOrders.js', () => ({
   loadProTraderConfig: vi.fn(() => ({})),
 }));
 
+// HERMETIC: before opening, optionsAutoTick re-reads the contract LTP from the
+// live NSE/BSE option chain for the v21.1.1 premium cross-check. A slow/dark
+// exchange endpoint used to spend the whole test budget there. A null chain
+// is the documented degrade (no cross-check → card levels stand).
+vi.mock('../server/ai/data.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    fetchNSEOptionChain: vi.fn(async () => null),
+    fetchBSEOptionChain: vi.fn(async () => null),
+  };
+});
+
 // The module under test reads/writes state files in server/data — point
 // them at a scratch dir via env before import (optionsAutoEntry caches
 // paths at module load).

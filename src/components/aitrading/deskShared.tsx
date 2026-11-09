@@ -319,7 +319,7 @@ export function IndiaHowToTrade() {
         <div className="bg-black/25 rounded-xl p-2.5">
           <div className="text-[10px] font-black text-cyan-300 mb-1">① TOP 6 DEEP-TREND SIGNAL CHUNO (grade dekho)</div>
           <p className="text-slate-400">
-            <b className="text-cyan-300">📡 TOP 6 DEEP-TREND SIGNALS</b> = 8 Institutional + 10 World Top Indicators + 3-Model Local Ollama AI se confluence-verified LONG/SHORT setups.
+            <b className="text-cyan-300">📡 TOP 6 DEEP-TREND SIGNALS</b> = 8 Institutional + 10 World Top Indicators + 3-seat FreeLLMAPI AI guard se confluence-verified LONG/SHORT setups.
             <b className="text-cyan-300"> ★ ELITE / STRONG</b> = full committee agree (75%+ conf) — yehi LIVE-executable grade hai (guaranteed accuracy claim nahi — ledger-calibrated win-rate hi dekho).
             <b className="text-cyan-300"> ⚡ ACTION</b> (55%+) sirf PAPER practice grade hai — LIVE order sirf ★ STRONG par jaata hai. Grade decision-gate pe lock hota hai, isliye quality/MTF boosts ke baad conf 75%+ dikh sakta hai bina badge upgrade ke.
             <span className="text-slate-500"> 9:30–14:30 ke beech entry best hai.</span>

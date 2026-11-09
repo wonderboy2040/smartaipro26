@@ -354,7 +354,7 @@ describe('v21.12 E — wiring + UI source contracts', () => {
     const s = idx();
     expect(s).toContain('committeeBanner()');
     expect(s).toContain("import { committeeInfo, committeeBanner } from './ai/committee.js'");
-    expect(s).toMatch(/committee,?\n/);
+    expect(s).toMatch(/committee,?\r?\n/);
   });
 
   it('supervisor.js: code-upgrade guard wired (probe v parse + guard + caps)', () => {

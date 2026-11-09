@@ -12,25 +12,28 @@ import { desktopNotify, desktopNotifyPermission, desktopNotifySupported, request
 import type { AlertsStatus, MaskedSecret } from './types';
 
 interface AiModeInfo {
-  mode: 'local' | 'cloud' | 'both';
+  mode: 'smart' | 'balanced' | 'fast';
   source?: string;
   persisted?: boolean;
 }
 
-interface OpenCodeInfo {
+interface FreeLlmInfo {
   available?: boolean;
-  loggedIn?: boolean | null;
-  models?: string[];
+  reachable?: boolean;
+  baseUrl?: string | null;
+  keyPresent?: boolean;
+  keySource?: string;
+  modelsCount?: number;
+  models?: Record<string, string>;
+  lastRoutedVia?: string | null;
   lastError?: string | null;
-  callsToday?: number;
-  maxCallsPerDay?: number;
 }
 
 const MODE_SOURCE_LABEL: Record<string, string> = {
   runtime: 'runtime switch',
   file: 'saved file',
   env: 'AI_MODE env seed',
-  'env-local-only': 'LLM_LOCAL_ONLY env seed',
+  'env-profile': 'FREELLMAPI_PROFILE env seed',
   default: 'safe default',
 };
 
@@ -53,7 +56,7 @@ interface Props {
 export const AlertsPanel = memo(function AlertsPanel({ fetchAlertsStatus, saveAlertsConfig, testAlert, busy, notify }: Props) {
   const [status, setStatus] = useState<AlertsStatus | null>(null);
   const [aiMode, setAiMode] = useState<AiModeInfo | null>(null);
-  const [opencode, setOpencode] = useState<OpenCodeInfo | null>(null);
+  const [freeLlm, setFreeLlm] = useState<FreeLlmInfo | null>(null);
   const [tgToken, setTgToken] = useState('');
   const [tgChat, setTgChat] = useState('');
   const [geminiKey, setGeminiKey] = useState('');
@@ -63,7 +66,7 @@ export const AlertsPanel = memo(function AlertsPanel({ fetchAlertsStatus, saveAl
   const reload = useCallback(async () => {
     const s = await fetchAlertsStatus();
     setStatus(s);
-    // v21.27: honest LOCAL/CLOUD mode + OpenCode status (no secrets).
+    // Honest FreeLLMAPI intelligence profile + router status (no secrets).
     try {
       const [mRes, eRes] = await Promise.all([
         apiFetch('/api/ai/mode', { signal: AbortSignal.timeout(8000) }),
@@ -71,14 +74,13 @@ export const AlertsPanel = memo(function AlertsPanel({ fetchAlertsStatus, saveAl
       ]);
       if (mRes.ok) {
         const m = await mRes.json().catch(() => null);
-        setAiMode(m && (m.mode === 'local' || m.mode === 'cloud' || m.mode === 'both') ? m : null);
+        setAiMode(m && (m.mode === 'smart' || m.mode === 'balanced' || m.mode === 'fast') ? m : null);
       }
       if (eRes.ok) {
         const e = await eRes.json().catch(() => null);
-        const oc = e?.opencode;
-        setOpencode(oc && typeof oc === 'object' ? oc : null);
+        setFreeLlm(e?.freellmapi && typeof e.freellmapi === 'object' ? e.freellmapi : null);
         const em = e?.mode;
-        if (em && (em.mode === 'local' || em.mode === 'cloud' || em.mode === 'both')) setAiMode(em);
+        if (em && (em.mode === 'smart' || em.mode === 'balanced' || em.mode === 'fast')) setAiMode(em);
       }
     } catch { /* aux status — never block the alerts panel */ }
   }, [fetchAlertsStatus]);
@@ -106,7 +108,7 @@ export const AlertsPanel = memo(function AlertsPanel({ fetchAlertsStatus, saveAl
   const tgReady = status?.telegram?.configured;
   const tokenLooksSet = status?.status?.telegramBotToken?.configured;
   const chatLooksSet = status?.status?.telegramChatId?.configured;
-  const ocReady = !!opencode?.available && opencode?.loggedIn !== false;
+  const routerReady = !!freeLlm?.available;
   const modeSource = aiMode ? (MODE_SOURCE_LABEL[aiMode.source || ''] || aiMode.source || 'unknown') : null;
 
   // v20.2 DESKTOP NOTIFICATIONS — native OS toasts for NEW STRONG
@@ -201,31 +203,32 @@ export const AlertsPanel = memo(function AlertsPanel({ fetchAlertsStatus, saveAl
         </div>
       </div>
 
-      {/* ---- v21.27 AI ENGINE MODE (LOCAL / CLOUD) ---- */}
+      {/* ---- FreeLLMAPI intelligence profile ---- */}
       <div className="pt-1 border-t border-white/5">
         <div className="flex items-center gap-2 flex-wrap mt-1.5">
-          <div className="text-[10px] font-black text-slate-400 tracking-wider">🧠 AI ENGINE MODE — Council · deep analysis · validator</div>
+          <div className="text-[10px] font-black text-slate-400 tracking-wider">🧠 AI INTELLIGENCE PROFILE — Council · deep analysis · validator · desk agents</div>
           {aiMode && (
             <span className={`px-2 py-0.5 rounded-lg text-[9px] font-black border ${
-              aiMode.mode === 'both'
+              aiMode.mode === 'smart'
                 ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
-                : aiMode.mode === 'cloud'
+                : aiMode.mode === 'balanced'
                   ? 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30'
                   : 'bg-violet-500/15 text-violet-300 border-violet-500/30'
             }`}>
               {aiMode.mode.toUpperCase()}
             </span>
           )}
-          {opencode && (
+          {freeLlm && (
             <span className={`px-2 py-0.5 rounded-lg text-[9px] font-black border ${
-              aiMode?.mode === 'local'
-                ? 'bg-slate-600/20 text-slate-500 border-slate-600/30'
-                : ocReady
-                  ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
-                  : 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+              routerReady
+                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                : 'bg-amber-500/15 text-amber-300 border-amber-500/30'
             }`}>
-              OPENCODE {aiMode?.mode === 'local' ? 'STANDBY' : ocReady ? 'READY' : opencode.available ? 'NO-AUTH' : 'OFF'}
+              FREELMAPI {routerReady ? 'READY' : freeLlm.reachable ? 'NO-KEY' : 'OFFLINE'}
             </span>
+          )}
+          {freeLlm?.modelsCount != null && freeLlm.modelsCount > 0 && (
+            <span className="text-[9px] text-slate-600">{freeLlm.modelsCount} models · {freeLlm.baseUrl || '127.0.0.1:31415'}</span>
           )}
           {aiMode && (
             <span className="text-[9px] text-slate-600">
@@ -234,16 +237,11 @@ export const AlertsPanel = memo(function AlertsPanel({ fetchAlertsStatus, saveAl
           )}
         </div>
         <div className="text-[9px] text-slate-600 leading-relaxed mt-1">
-          LOCAL = local Ollama only (zero cloud calls) · CLOUD = OpenCode free models first (GLM scan / DeepSeek deep), then local Ollama fallback · BOTH = OpenCode cloud + local Ollama parallel, verdicts merge (dual-engine agree/conflict). Paid APIs kabhi nahi. Header ke LOCAL/CLOUD/BOTH switch se turant apply hota hai — restart ki zaroorat nahi.
+          SMART = FreeLLMAPI auto:smart (deepest council / validator / desk-agent answers) · BALANCED = auto:balanced (quality/latency blend for scans) · FAST = auto:fast (quick scans / MTF guard). Deep analysis hamesha auto:smart par jati hai. FreeLLMAPI local router upstream provider keys/quota khud manage karta hai. Header ke SMART/BALANCED/FAST switch se turant apply hota hai — restart ki zaroorat nahi.
         </div>
-        {aiMode?.mode === 'cloud' && opencode && !ocReady && (
+        {!routerReady && freeLlm && (
           <div className="text-[9px] text-amber-400/80 font-mono mt-1">
-            OpenCode ready nahi ({opencode.lastError || 'CLI/login check karo'}) — cloud asks Ollama fallback par jayengi.
-          </div>
-        )}
-        {aiMode?.mode === 'both' && opencode && !ocReady && (
-          <div className="text-[9px] text-amber-400/80 font-mono mt-1">
-            BOTH mode: OpenCode ready nahi ({opencode.lastError || 'CLI/login check karo'}) — abhi sirf local Ollama leg jawab dega (single-engine degrade).
+            FreeLLMAPI router reachable nahi ({freeLlm.lastError || 'desktop app band hai'}) — AI lanes deterministic rahenge. Start karo: FreeLLMAPI desktop app (default 127.0.0.1:31415) aur RECHECK dabao.
           </div>
         )}
       </div>
@@ -276,7 +274,7 @@ export const AlertsPanel = memo(function AlertsPanel({ fetchAlertsStatus, saveAl
           <StatusChip label="gemini" s={status?.status?.geminiApiKey} />
           <StatusChip label="groq" s={status?.status?.groqApiKey} />
           <span className="text-[9px] text-slate-600 self-center ml-1">
-            Council/deep/validator ab LOCAL/CLOUD mode se chalte hain. Ye keys legacy askLLM lanes (desk chat, briefing, committee, weekly review) ke liye rehti hain — key sirf server par, browser me kabhi wapas nahi.
+            Council/deep/validator FreeLLMAPI router se chalte hain (keys router ke paas hain). Ye direct keys legacy askLLM lanes (desk chat, briefing, committee, weekly review) ke fallback liye rehti hain — key sirf server par, browser me kabhi wapas nahi.
           </span>
         </div>
       </div>

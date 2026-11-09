@@ -8,7 +8,7 @@ export default defineConfig({
     setupFiles: ['./src/test/setup.ts'],
     fileParallelism: false,
     // v21.28.0 [GATE-STABILITY]: the 254-file sequential run can stall a
-    // single fast suite past the 5s default (disk/AV/Ollama I/O spikes); a
+    // single fast suite past the 5s default (disk/AV/FreeLLMAPI I/O spikes); a
     // timeout then cascades through shared-mock tests. 15s keeps the gate
     // deterministic without masking a genuine hang (none run anywhere near).
     testTimeout: 15_000,

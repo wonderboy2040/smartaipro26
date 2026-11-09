@@ -25,16 +25,17 @@ import { buildDeterministicIntradayAnswer } from '../ai/superIntelFallback.js';
 
 // v13.2 A5: MCP governance — rate-limit + audit-log every tool call
 import { withMcpAudit } from '../ai/mcpAudit.js';
-// v18.7 ENGINE SENTINEL — health-aware provider chain (cooldown
-// fast-fail, auto half-open recovery, honest status line, keyless
-// local ollama engine when installed).
-import { engineSkip, engineTrack, engineOk, engineStatusLine, ollamaProbe, ollamaCompatCfg } from '../ai/llmSentinel.js';
+// ENGINE SENTINEL — health-aware provider chain (cooldown fast-fail,
+// auto half-open recovery, honest status line). FreeLLMAPI is the first
+// engine; direct provider keys remain a fallback only.
+import { engineSkip, engineTrack, engineOk, engineStatusLine } from '../ai/llmSentinel.js';
+import { freeLlmAgentCfg } from '../ai/freellmapi.js';
 
 const MAX_TOOL_ROUNDS = 6;
 const PER_ROUND_TIMEOUT_MS = 30000;
-// v18.8: the local ollama engine gets a CPU-realistic per-round budget
-// (a CPU-only llama3.1:8b can take 30-90s per round; 30s made it fail).
-const OLLAMA_ROUND_TIMEOUT_MS = 120000;
+// FreeLLMAPI routes to remote upstreams; a smart-seat tool round can take
+// longer than a direct small-model call. 90s keeps the agent honest.
+const FREELMAPI_ROUND_TIMEOUT_MS = Number(process.env.FREELLMAPI_AGENT_TIMEOUT_MS) || 90000;
 
 // v10.3.1 TOOL TIMEOUT — user-reported: "ASK AI theek se kaam nahi
 // kar raha". A cold NSE scan (full universe + AI consensus) takes
@@ -695,14 +696,17 @@ async function _runGeminiLoop(model, { systemPrompt, messages, deps, toolTrace }
 
 async function runOpenAICompatAgent({ systemPrompt, messages, deps, toolTrace, provider, cfgOverride = null }) {
   const { KEYS, OPENAI_COMPAT } = deps;
-  // v18.7: cfgOverride lets the keyless LOCAL ollama engine ride the
-  // exact same loop (auth header is inert for ollama).
+  // cfgOverride lets the managed FreeLLMAPI router ride this exact loop;
+  // its key/base URL live in the cfg, never in the provider key map.
   const cfg = cfgOverride || OPENAI_COMPAT?.[provider];
-  if (!cfg || !KEYS?.[provider]) return null;
+  if (!cfg) return null;
+  if (!cfg.apiKey && !KEYS?.[provider]) return null;
 
-  const modelChain = provider === 'groq'
-    ? [cfg.defModel, 'llama-3.3-70b-versatile']
-    : [cfg.defModel];
+  const modelChain = provider === 'freellmapi'
+    ? [cfg.defModel, cfg.deepModel, cfg.fastModel].filter(Boolean)
+    : provider === 'groq'
+      ? [cfg.defModel, 'llama-3.3-70b-versatile']
+      : [cfg.defModel];
   let lastErr = null;
   for (const model of modelChain) {
     try {
@@ -717,7 +721,8 @@ async function runOpenAICompatAgent({ systemPrompt, messages, deps, toolTrace, p
 
 async function _runOpenAICompatLoop(model, cfg, { systemPrompt, messages, deps, toolTrace, provider }) {
   const { KEYS } = deps;
-  if (!KEYS?.[provider]) return null;
+  const authKey = cfg.apiKey || KEYS?.[provider];
+  if (!authKey) return null;
   const reqMessages = [
     { role: 'system', content: systemPrompt },
     ...messages.filter(m => m.role !== 'system').map(m => ({
@@ -736,12 +741,12 @@ async function _runOpenAICompatLoop(model, cfg, { systemPrompt, messages, deps, 
     };
     if (round === 0) body.tools = PRO_TRADER_AGENT_TOOLS;
 
-    // v18.8: provider-aware round budget — local ollama (CPU) gets the
-    // long budget; cloud engines keep the tight 30s.
-    const roundTimeout = provider === 'ollama' ? OLLAMA_ROUND_TIMEOUT_MS : PER_ROUND_TIMEOUT_MS;
+    // Provider-aware round budget: the managed router gets room for a
+    // smart-seat tool round; direct providers keep the tight 30s.
+    const roundTimeout = provider === 'freellmapi' ? FREELMAPI_ROUND_TIMEOUT_MS : PER_ROUND_TIMEOUT_MS;
     const res = await fetch(cfg.url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${KEYS[provider]}` },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authKey}` },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(roundTimeout),
     });
@@ -809,22 +814,27 @@ export async function runProTraderAgent(messages, deps) {
   const toolTrace = [];
 
   // v18.7 ENGINE SENTINEL CHAIN — EXTENDED (openrouter / huggingface /
-  // nvidia after cerebras), HEALTH-AWARE (cooldown providers skipped
-  // fast; expiry auto-retries — half-open), and LOCAL (keyless ollama
-  // joins last). Same pattern as the crypto desk agent.
+  // FreeLLMAPI FIRST — the managed router owns upstream keys/quotas and
+  // smart routing. Direct provider keys are only a fallback. Health-aware:
+  // cooldown providers are skipped fast and auto-retry on expiry.
   const cloudProviders = ['groq', 'cerebras', 'openrouter', 'huggingface', 'nvidia'];
+  const dispatching = new Set();
   const steps = [];
+  // FreeLLMAPI FIRST — the managed router owns upstream keys/quotas and
+  // smart routing. Direct provider keys are only a fallback.
+  const flCfg = await freeLlmAgentCfg().catch(() => null);
+  if (flCfg && !engineSkip('freellmapi')) {
+    dispatching.add('freellmapi');
+    steps.push({
+      provider: 'freellmapi',
+      run: () => runOpenAICompatAgent({ systemPrompt, messages, deps, toolTrace, provider: 'freellmapi', cfgOverride: flCfg }),
+    });
+  }
   if (deps?.KEYS?.gemini) steps.push({ provider: 'gemini', run: () => runGeminiAgent({ systemPrompt, messages, deps, toolTrace }) });
   for (const p of cloudProviders) {
     if (deps?.KEYS?.[p] && deps?.OPENAI_COMPAT?.[p]) steps.push({ provider: p, run: () => runOpenAICompatAgent({ systemPrompt, messages, deps, toolTrace, provider: p }) });
   }
-  if (await ollamaProbe().catch(() => false)) {
-    steps.push({
-      provider: 'ollama',
-      run: () => runOpenAICompatAgent({ systemPrompt, messages, deps: { ...deps, KEYS: { ...deps?.KEYS, ollama: 'local' } }, toolTrace, provider: 'ollama', cfgOverride: ollamaCompatCfg() }),
-    });
-  }
-  const chain = steps.filter(s => !engineSkip(s.provider));
+  const chain = steps.filter(s => dispatching.has(s.provider) || !engineSkip(s.provider));
 
   const errors = [];
   for (const step of chain) {

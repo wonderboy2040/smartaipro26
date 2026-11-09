@@ -45,7 +45,8 @@ import { spotWsStatus, spotWsDemand } from '../server/ai/cxSpotWs.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = path.join(__dirname, '..');
-const read = (p) => fs.readFileSync(path.join(APP_ROOT, p), 'utf8');
+// Normalize CRLF: multi-line source pins below match on '\n' boundaries.
+const read = (p) => fs.readFileSync(path.join(APP_ROOT, p), 'utf8').replace(/\r\n/g, '\n');
 const LINK_SRC = read('server/ai/mtfAutoLink.js');
 const ROUTES_SRC = read('server/ai/routes.js');
 const HM_SRC = read('server/healthMonitor.js');

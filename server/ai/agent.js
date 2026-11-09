@@ -2725,6 +2725,9 @@ export async function agentStatus(deps) {
 // ---------------- test hooks ----------------
 export function __resetAgentForTests() {
   _state = freshState();
+  // A timed-out / wedged tick must never poison the next test: the
+  // single-flight guard would silently turn every later tick into a no-op.
+  _ticking = false;
   persistState();
   saveAgentConfig({ ...AGENT_DEFAULTS });
   _lastSkip = { key: '', at: 0 };

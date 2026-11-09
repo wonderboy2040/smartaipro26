@@ -129,13 +129,11 @@ describe('v6.9 computeTopFive — pure ranking', () => {
 // ---------------- board payload integration ----------------
 describe('v6.9 board payload carries topFive', () => {
   it('getSignals payload shape includes topFive on all three desks (cached honest fallback)', async () => {
-    // v21.27.1: this test asserts the PAYLOAD CONTRACT, not local-model
-    // speed. With a wedged/slow Ollama daemon the full board scan (debate +
-    // fallback) can legitimately exceed the test budget, so bound the scan
-    // engine here; the app-side default is 45s (llmChain.js) and the
+    // v22.0: this test asserts the PAYLOAD CONTRACT, not model speed.
+    // With a slow/unreachable FreeLLMAPI router the full board scan
+    // (debate + fallback) can legitimately exceed the test budget; the
+    // fetch stub below makes the router probe fail fast, and the
     // timeout→abstain path is exactly the honest degradation under test.
-    const prevScanTimeout = process.env.OLLAMA_SCAN_TIMEOUT_MS;
-    process.env.OLLAMA_SCAN_TIMEOUT_MS = '3000';
     // v21.28.0 GATE-STABILITY — HERMETIC CONTRACT TEST: this asserts the
     // payload shape, so it must not depend on live feeds. A dark network
     // makes every data leg burn its own timeout and the scan blew 120s.
@@ -158,8 +156,6 @@ describe('v6.9 board payload carries topFive', () => {
       }
     } finally {
       globalThis.fetch = origFetch;
-      if (prevScanTimeout == null) delete process.env.OLLAMA_SCAN_TIMEOUT_MS;
-      else process.env.OLLAMA_SCAN_TIMEOUT_MS = prevScanTimeout;
     }
   }, 120_000);
 });

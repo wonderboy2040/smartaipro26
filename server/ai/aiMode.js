@@ -1,63 +1,87 @@
 // ============================================================
-// server/ai/aiMode.js — site-wide LOCAL / CLOUD / BOTH engine mode
+// server/ai/aiMode.js — site-wide FreeLLMAPI intelligence profile
 // ------------------------------------------------------------
-// LOCAL  = local Ollama only.
-// CLOUD  = OpenCode free models first (GLM scan / DeepSeek deep),
-//          then Ollama fallback. Paid cloud keys are NOT used by
-//          the v1 Council / deep / validator lanes.
-// BOTH   = OpenCode cloud AND local Ollama run in PARALLEL on every
-//          council/validator call; their verdicts are merged
-//          (agree → averaged confidence, conflict → favoured engine
-//          at a 30% discount, single-engine → honest degradation).
-//          No paid keys in any mode.
+// The site no longer owns an inference engine. Every AI lane talks to
+// the local FreeLLMAPI router, which holds the provider keys and picks
+// the best eligible model per request. The only site-wide choice left
+// is the routing profile:
 //
-// The mode is server-wide, persisted atomically at
-// server/data/ai-mode.json, and read fresh on every AI call — the
-// header switch therefore applies without a server restart and
-// survives restarts.
+//   SMART    (default) → auto:smart    · deepest council / validator /
+//                                       deep analysis answers
+//   BALANCED           → auto:balanced · quality/latency blend for the
+//                                       desk agents and board scans
+//   FAST               → auto:fast     · quick scans / MTF guard seats
 //
-// Precedence: an explicit runtime switch wins; otherwise the
-// persisted file; otherwise AI_MODE; otherwise LLM_LOCAL_ONLY seeds
-// LOCAL; otherwise the safe default LOCAL. LLM_LOCAL_ONLY is only
-// a first-boot seed — it never overrides a saved/runtime mode.
+// The profile is persisted atomically at server/data/ai-mode.json and
+// read fresh on every AI call, so the header switch applies without a
+// restart and survives one.
+//
+// Precedence: explicit runtime switch > persisted file > AI_MODE /
+// FREELLMAPI_PROFILE env > safe default SMART.
+//
+// Legacy values: the old LOCAL / CLOUD / BOTH modes all map to SMART.
+// FreeLLMAPI is local-first by design (the router runs on this machine
+// and its upstreams are free), so there is no paid-vs-local split left.
 // ============================================================
 import { loadJSON, saveJSON } from '../lib/store.js';
 
-export const AI_MODES = ['local', 'cloud', 'both'];
+export const AI_MODES = ['smart', 'balanced', 'fast'];
 export const AI_MODE_FILE = 'ai-mode.json';
-const DEFAULT_MODE = 'local';
+const DEFAULT_MODE = 'smart';
+
+/** Profile → FreeLLMAPI virtual model. */
+export const AI_PROFILE_MODELS = {
+  smart: 'auto:smart',
+  balanced: 'auto:balanced',
+  fast: 'auto:fast',
+};
+
+/** Legacy persisted/env values from the previous engine-mode era. */
+const LEGACY_MODE_MAP = {
+  local: 'smart',
+  cloud: 'smart',
+  both: 'smart',
+  max: 'smart',
+  intelligent: 'smart',
+};
 
 let _runtimeMode = null;
 
-/** Normalize a user/env value. Returns 'local' | 'cloud' | null. */
+/** Normalize a user/env value. Returns 'smart' | 'balanced' | 'fast' | null. */
 export function normalizeAiMode(value) {
   const mode = String(value ?? '').trim().toLowerCase();
-  return AI_MODES.includes(mode) ? mode : null;
-}
-
-function _truthy(value) {
-  return ['1', 'true', 'on', 'yes', 'enable', 'enabled'].includes(String(value ?? '').trim().toLowerCase());
+  if (AI_MODES.includes(mode)) return mode;
+  if (LEGACY_MODE_MAP[mode]) return LEGACY_MODE_MAP[mode];
+  return null;
 }
 
 /** First-boot default from env. Never overrides a persisted mode. */
 function _envMode() {
-  const explicit = normalizeAiMode(process.env.AI_MODE);
-  if (explicit) return { mode: explicit, source: 'env' };
-  if (_truthy(process.env.LLM_LOCAL_ONLY)) return { mode: 'local', source: 'env-local-only' };
-  return { mode: DEFAULT_MODE, source: 'default' };
+  const raw = process.env.AI_MODE || process.env.FREELLMAPI_PROFILE;
+  const explicit = normalizeAiMode(raw);
+  if (explicit) {
+    return {
+      mode: explicit,
+      source: process.env.AI_MODE ? 'env' : 'env-profile',
+      legacy: AI_MODES.includes(String(raw ?? '').trim().toLowerCase()) ? null : String(raw ?? '').trim(),
+    };
+  }
+  return { mode: DEFAULT_MODE, source: 'default', legacy: null };
 }
 
 function _persisted() {
   const data = loadJSON(AI_MODE_FILE, {});
-  const mode = normalizeAiMode(data?.mode);
+  const raw = String(data?.mode ?? '').trim().toLowerCase();
+  const mode = normalizeAiMode(raw);
   if (!mode) return null;
   return {
     mode,
+    legacy: AI_MODES.includes(raw) ? null : raw,
     updatedAt: Number.isFinite(Number(data?.updatedAt)) ? Number(data.updatedAt) : null,
   };
 }
 
-/** The effective mode. Runtime switch > persisted file > env > default. */
+/** The effective profile. Runtime switch > persisted file > env > default. */
 export function getAiMode() {
   return getAiModeStatus().mode;
 }
@@ -68,6 +92,9 @@ export function getAiModeStatus() {
     const saved = _persisted();
     return {
       mode: _runtimeMode,
+      profile: _runtimeMode,
+      model: AI_PROFILE_MODELS[_runtimeMode],
+      engine: 'freellmapi',
       source: 'runtime',
       persisted: !!saved && saved.mode === _runtimeMode,
       updatedAt: saved?.mode === _runtimeMode ? saved.updatedAt : null,
@@ -78,47 +105,63 @@ export function getAiModeStatus() {
   if (saved) {
     return {
       mode: saved.mode,
+      profile: saved.mode,
+      model: AI_PROFILE_MODELS[saved.mode],
+      engine: 'freellmapi',
       source: 'file',
       persisted: true,
       updatedAt: saved.updatedAt,
+      legacy: saved.legacy,
       modes: [...AI_MODES],
     };
   }
   const env = _envMode();
   return {
     mode: env.mode,
+    profile: env.mode,
+    model: AI_PROFILE_MODELS[env.mode],
+    engine: 'freellmapi',
     source: env.source,
     persisted: false,
     updatedAt: null,
+    legacy: env.legacy,
     modes: [...AI_MODES],
   };
 }
 
-export function isLocalMode() {
-  return getAiMode() === 'local';
+export function isSmartMode() {
+  return getAiMode() === 'smart';
 }
 
-export function isCloudMode() {
-  return getAiMode() === 'cloud';
+export function isBalancedMode() {
+  return getAiMode() === 'balanced';
 }
 
-export function isBothMode() {
-  return getAiMode() === 'both';
+export function isFastMode() {
+  return getAiMode() === 'fast';
 }
 
 /**
- * Switch the site mode now. Applies to this process immediately even
- * when the filesystem is read-only (`persisted:false` reports that
- * honestly); a writable server/data/ai-mode.json makes it restart-safe.
+ * Switch the profile now. Applies to this process immediately even when
+ * the filesystem is read-only (`persisted:false` reports that honestly);
+ * a writable server/data/ai-mode.json makes it restart-safe.
  */
 export function setAiMode(value) {
-  const mode = normalizeAiMode(value);
+  const raw = String(value ?? '').trim().toLowerCase();
+  const mode = normalizeAiMode(raw);
   if (!mode) {
-    return { ok: false, mode: null, persisted: false, error: 'mode must be "local", "cloud" or "both"' };
+    return { ok: false, mode: null, persisted: false, error: 'mode must be "smart", "balanced" or "fast"' };
   }
   _runtimeMode = mode;
   const persisted = saveJSON(AI_MODE_FILE, { mode, updatedAt: Date.now() });
-  return { ok: true, mode, persisted };
+  return {
+    ok: true,
+    mode,
+    profile: mode,
+    model: AI_PROFILE_MODELS[mode],
+    legacy: AI_MODES.includes(raw) ? null : raw,
+    persisted,
+  };
 }
 
 /** Test hook — drop the in-process override (file/env are re-read). */

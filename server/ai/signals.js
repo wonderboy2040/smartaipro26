@@ -159,8 +159,7 @@ import { verifySignal, verificationWire } from './signalVerifier.js';
 import { verifySignalUltrafast, ultrafastWire, ultrafastGatePatch } from './ultrafastVerifier.js';
 // v13.2 A2: LLM second-opinion validator (borderline band, candle-cached)
 import { llmValidateSignal, llmValidateCached, llmValidatorEnabled, inBorderlineBand } from './llmValidator.js';
-// v21.27 LOCAL/CLOUD: the board's council seats ride the ONE shared
-// mode-aware chain (LOCAL = Ollama, CLOUD = OpenCode → Ollama fallback).
+// The board's council seats ride the ONE shared FreeLLMAPI chain.
 import { councilAsk, councilAskDeep, aiEngineOnline } from './llmChain.js';
 
 // v9: how many coins the Superintelligence Signal Board scans for the
@@ -990,12 +989,11 @@ export function mtfWirePayload(tapeMTF) {
 }
 
 // ---------------- AI COUNCIL (LLM chain) ----------------
-// v18.8 ENGINE CHAIN UNIFICATION: the private 4-provider ladder that
-// used to live here (gemini→groq→cerebras→openrouter, NO sentinel,
-// NO huggingface/nvidia, NO local ollama) is DELETED — the board's AI
-// Council seat now rides the ONE shared chain (sentinel health-tracked,
-// 6 cloud engines + keyless local ollama, provider-aware timeouts).
-// One chain, one health ledger, one place to fix.
+// ENGINE CHAIN UNIFICATION: the private 4-provider ladder that used to
+// live here is DELETED — the board's AI Council seat rides the ONE
+// shared FreeLLMAPI chain (sentinel health-tracked, smart routing,
+// provider-aware timeouts). One chain, one health ledger, one place
+// to fix.
 
 /**
  * Normalize a council candidate to the FLAT shape the prompt builder
@@ -1061,13 +1059,10 @@ export function councilDebateEnabled() {
 
 /**
  * The 3-step debate. PURE-ish (network only via councilAsk).
- * v21.0.6 [audit B1/G1]: opts.deep = true → teeno debate calls
- * councilAskDeep (OLLAMA_DEEP_MODEL, e.g. deepseek-r1:14b) pe jati hain.
- * Pehle sirf legacy single-shot fallback deep model use karta tha —
- * default debate=ON hone ki wajah se 🔬 deep modal ka council HAMESHA
- * scan model (qwen3:8b) pe chalta tha, jabki chip "↗R1·14B" ka
- * promise deep path ko tha. Cloud legs ke liye deep flag no-op hai
- * (sirf local ollama leg swap hota hai).
+ * opts.deep = true → teeno debate calls councilAskDeep pe jati hain,
+ * yani FreeLLMAPI ka `auto:smart` seat (deep reasoning). Scan path
+ * `auto:balanced`/`auto:fast` profile use karta hai — deep modal kabhi
+ * scan model par silently downgrade nahi hota.
  * @returns {Promise<{verdicts:object, model:string, online:true,
  *                     debate:{bull:object, bear:object}}|null>}
  */
@@ -1145,8 +1140,7 @@ Respond STRICT JSON only (no markdown):
  * just because the debate chain hiccuped.
  */
 export async function aiCouncilVerify(candidates, deps, market, opts = {}) {
-  // v21.27: mode-aware availability gate (LOCAL = Ollama; CLOUD =
-  // OpenCode or the Ollama fallback). Paid keys no longer count.
+  // Availability gate — FreeLLMAPI router health (cached probe).
   if (!candidates?.length || !(await aiEngineOnline(deps))) return { verdicts: {}, model: null, online: false };
   if (councilDebateEnabled()) {
     const debated = await aiCouncilDebate(candidates, deps, market, opts).catch(() => null);
@@ -1175,12 +1169,10 @@ ${JSON.stringify(compact, null, 1)}${sentLines}
 Respond STRICT JSON only (no markdown):
 {"verdicts":{"SYMBOL":{"verdict":"LONG"|"SHORT"|"AVOID","confidence":0-100,"note":"max 12 words","analysis":"2 sentences: your reasoning chain — indicator state, timing quality, risk"}}}`;
 
-  // v18.8: the ONE shared chain — sentinel health-aware, HF/NVIDIA
-  // capable, ends at the keyless local ollama engine (90s local budget).
-  // v20.6.1: opts.deep = true → the deep path (getDeepSignal) uses
-  // OLLAMA_DEEP_MODEL (deepseek-r1:14b) instead of OLLAMA_MODEL
-  // (qwen3:8b) for the local-engine leg. The board path always passes
-  // opts.deep=false (default) — the scan model is never swapped.
+  // The ONE shared FreeLLMAPI chain — sentinel health-aware.
+  // opts.deep = true → councilAskDeep (auto:smart) for the deep path
+  // (getDeepSignal). The board path always passes opts.deep=false and
+  // follows the active SMART/BALANCED/FAST profile.
   const asked = opts.deep ? await councilAskDeep(prompt, deps) : await councilAsk(prompt, deps);
   const verdicts = asked.json;
   const model = asked.model;
@@ -2573,7 +2565,7 @@ async function _computeBoard(mkt, deps, opts = {}) {
       // expert 35% + "AI" 20% jahan AI = engine ka hi echo). Ab offline
       // me aiConf null rehta hai → computeSuperScore HONEST 2-source
       // redistribute karta hai (55% engine + 45% expert). "AI verdict"
-      // driver sirf tab dikhta hai jab sach me koi LLM (cloud/Ollama)
+      // driver sirf tab dikhta hai jab sach me koi LLM (FreeLLMAPI)
       // ne verdict diya ho.
       // ----------------------------------------------------------------
       const aiConfFinal = aiConf;
@@ -3337,10 +3329,9 @@ async function _computeDeepSignal(sym, mkt, deps, opts, cacheKey) {
   // being asked to verify — 'PENDING'/conf 0 starved the prompt.
   // v10.5: MTF agreement caps STRONG here too when the tape read conflicts.
   const preConsensus = aggregateVotes(_rediscountRevivedVotes(votes), gatesFor(deps), _deepMtfAgreement != null ? { mtfAgreement: _deepMtfAgreement } : {});
-  // v20.6.1: deep path → aiCouncilVerify gets opts.deep=true → council
-  // uses OLLAMA_DEEP_MODEL (deepseek-r1:14b) instead of OLLAMA_MODEL
-  // (qwen3:8b). On 16GB with OLLAMA_MAX_LOADED_MODELS=1, Ollama auto-
-  // swaps (cost ~30-60s). Scan path (board) never triggers this.
+  // Deep path → aiCouncilVerify gets opts.deep=true → the council asks
+  // FreeLLMAPI's auto:smart seat (deep reasoning). Scan path (board)
+  // never triggers this — it follows the active profile.
   const council = await aiCouncilVerify([{
     symbol: sym,
     side: preConsensus.side,

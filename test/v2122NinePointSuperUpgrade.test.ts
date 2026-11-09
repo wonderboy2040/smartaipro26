@@ -8,7 +8,7 @@
 //   4. SIGNAL RECHECK — 15s LIVE WATCH Auto-Trade Deep Monitoring Integration
 //   5. Single `LIVE` Button on MTF Dual Board to turn ON Auto-Trade Intelligence
 //   6. GOLD & SILVER (XAU/XAG perps) + EQUITY SIM on MTF Dual-Timeframe Signal Board
-//   7. 3-Model Local Ollama AI Ensemble Optimization for MTF Dual Board
+//   7. 3-Seat FreeLLMAPI AI Guard Optimization for MTF Dual Board
 //   8. Superfast & Intelligent Telegram Bot (/mtf, /gold, /autotrade, /deepmonitor)
 //   9. Accurate implementation in both Intraday TAB & Crypto TAB
 // ============================================================
@@ -35,7 +35,7 @@ import {
   computeWorldTopIndicators,
 } from '../server/ai/lib/indicators.js';
 import { buildPlanFromCandles, readContext, readTrigger } from '../server/ai/tradePlanner.js';
-import { getOllamaTrioModels, evaluateMtfRowWithOllamaTrio } from '../server/ai/llmSentinel.js';
+import { getAiGuardModels, evaluateMtfRowWithAiGuard } from '../server/ai/llmSentinel.js';
 import { fuseDualTf, buildDualRow, getDualMtfBoard, peekDualMtfBoards, __clearDualBoardCaches } from '../server/ai/mtfDualBoard.js';
 import {
   computeWallet95Deployment,
@@ -259,10 +259,10 @@ describe('v21.22.0 — 9-Point Superintelligence Upgrade', () => {
     expect(recheckSrc).toContain('AUTO-TRADE DEEP MONITOR (REALTIME WS)');
   });
 
-  it('6 & 7) MTF Dual Board includes GOLD & SILVER (XAU/XAG perps) + EQUITY SIM + 3-Model Local Ollama AI verdicts + 2s 24x7 feed', async () => {
-    const trio = getOllamaTrioModels();
+  it('6 & 7) MTF Dual Board includes GOLD & SILVER (XAU/XAG perps) + EQUITY SIM + 3-Seat FreeLLMAPI AI verdicts + 2s 24x7 feed', async () => {
+    const trio = getAiGuardModels();
     expect(trio.models.length).toBe(3);
-    const verdict = evaluateMtfRowWithOllamaTrio({
+    const verdict = evaluateMtfRowWithAiGuard({
       symbol: 'XAU',
       side: 'LONG',
       superScore: 86,
@@ -273,7 +273,7 @@ describe('v21.22.0 — 9-Point Superintelligence Upgrade', () => {
       netRR_T2: 1.8,
     });
     expect(verdict.models.length).toBe(3);
-    expect(verdict.verdict).toBe('3/3 OLLAMA AI LOCK');
+    expect(verdict.verdict).toBe('3/3 FREELMAPI AI LOCK');
     expect(verdict.scoreBoost).toBeGreaterThan(0);
 
     const board = await getDualMtfBoard({
@@ -293,7 +293,7 @@ describe('v21.22.0 — 9-Point Superintelligence Upgrade', () => {
     expect(Array.isArray(board.equitySimRows)).toBe(true);
     expect(board.equitySimRows.length).toBeGreaterThan(0);
     expect(board.rows[0].worldIndicators).toBeDefined();
-    expect(board.rows[0].ollamaTrio).toBeDefined();
+    expect(board.rows[0].aiGuard).toBeDefined();
     // v21.23.1 HONEST update: purana >=75 threshold fabricated 95/92 ladder ke
     // against calibrated tha (score<75 row ko bhi formula 77 de deta tha). Ab
     // winRatePct honest heuristic band (52-85) me hai — candle-only fixture
@@ -321,7 +321,7 @@ describe('v21.22.0 — 9-Point Superintelligence Upgrade', () => {
           tier: 'ELITE',
           winRatePct: 95,
           worldIndicators: { alignedCount: 9 },
-          ollamaTrio: { verdict: '3/3 OLLAMA AI LOCK' },
+          aiGuard: { verdict: '3/3 FREELMAPI AI LOCK' },
           plan: { entry: 67500, stopLoss: 66800, t1: 68400, t2: 69500 },
         },
       ],
@@ -334,7 +334,7 @@ describe('v21.22.0 — 9-Point Superintelligence Upgrade', () => {
           tier: 'ELITE',
           winRatePct: 95,
           worldIndicators: { alignedCount: 9 },
-          ollamaTrio: { verdict: '3/3 OLLAMA AI LOCK' },
+          aiGuard: { verdict: '3/3 FREELMAPI AI LOCK' },
           plan: { entry: 2745, stopLoss: 2730, t1: 2765, t2: 2790 },
         },
       ],
@@ -347,7 +347,7 @@ describe('v21.22.0 — 9-Point Superintelligence Upgrade', () => {
           tier: 'STRONG',
           winRatePct: 92,
           worldIndicators: { alignedCount: 8 },
-          ollamaTrio: { verdict: '2/3 OLLAMA AI STRONG' },
+          aiGuard: { verdict: '2/3 FREELMAPI AI STRONG' },
           plan: { entry: 138.5, stopLoss: 136.2, t1: 141.0, t2: 144.5 },
         },
       ],
@@ -358,7 +358,7 @@ describe('v21.22.0 — 9-Point Superintelligence Upgrade', () => {
     expect(tgBoardTxt).toContain('NVDA');
     // v21.23.3 HONESTY: rebuilt formatter never prints unmeasured winrates.
     expect(tgBoardTxt).not.toContain('95% Winrate');
-    expect(tgBoardTxt).not.toContain('OLLAMA AI LOCK');
+    expect(tgBoardTxt).not.toContain('FREELMAPI AI LOCK');
 
     setMtfAutoEnabled(true);
     updateMtfAutoConfig({ executionMode: 'live', walletDeployPct: 95, walletAmountINR: 1163.93, riskCapsAcknowledged: true, riskCapsAckPhrase: 'I ACCEPT THE RISK CAPS' });
@@ -1170,7 +1170,7 @@ describe('v21.22.0 — 9-Point Superintelligence Upgrade', () => {
     ]);
 
     // Counter-candle reversal on 5m Action TF (e.g. LONG context but last 5m candle dumps below EMA9 with negative roc1)
-    // must set reversalRisk=true, fired=false, and be vetoed by the 3-Model Local Ollama AI Ensemble
+    // must set reversalRisk=true, fired=false, and be vetoed by the 3-Seat FreeLLMAPI AI Guard
     const reversing5m = bullCandles.map(c => ({ ...c }));
     const lastIdx = reversing5m.length - 1;
     const prevClose = reversing5m[lastIdx - 1].close;
@@ -1195,7 +1195,7 @@ describe('v21.22.0 — 9-Point Superintelligence Upgrade', () => {
     expect(revRow.triggerFired).toBe(false);
     expect(revRow.directionVerified).toBe(false);
     expect(revRow.autoEligible).toBe(false);
-    expect(revRow.ollamaTrio?.approvedCount).toBeLessThan(2);
+    expect(revRow.aiGuard?.approvedCount).toBeLessThan(2);
 
     // Pre-execution live quote anti-reversal guard in mtfAutoTick:
     // If live price has already dropped >= 25% of risk distance below entry on a LONG signal, mtfAutoTick blocks entry!

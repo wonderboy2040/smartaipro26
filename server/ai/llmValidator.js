@@ -123,8 +123,7 @@ export async function llmValidateSignal(sig, deps = {}, { now = Date.now(), env 
     // Out-of-band signals never ask the LLM (the plan's scoping rule).
     if (!inBorderlineBand(sig?.confidence, env)) return null;
     const { KEYS, OPENAI_COMPAT } = deps || {};
-    // v21.27: mode-aware availability gate (LOCAL = Ollama; CLOUD =
-    // OpenCode or the Ollama fallback). Paid keys no longer count.
+    // Availability gate — FreeLLMAPI router health (cached probe).
     if (!(await aiEngineOnline(deps))) return null;
 
     const bucket = _bucket(now);

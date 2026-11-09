@@ -1011,9 +1011,11 @@ export interface MtfDualRow {
     chandelierStop?: number | null;
     institutional8?: Array<{ id: string; label: string; dir?: number; aligned: boolean; detail?: string }>;
   } | null;
-  ollamaTrio?: {
+  aiGuard?: {
     optimized?: boolean;
     reachable?: boolean;
+    profile?: 'smart' | 'balanced' | 'fast';
+    engine?: 'freellmapi' | 'rule';
     models?: string[];
     fastModel?: string;
     deepModel?: string;
@@ -1022,9 +1024,8 @@ export interface MtfDualRow {
     totalModels?: number;
     voteScore?: number;
     verdict?: string;
-    // v21.23.3 HONESTY: sentinel ka honest path — offline pe "Rule-Based Guard n/3",
-    // live pe "Live Ollama (...)"; raw verdict rule-based ho sakta hai (offline bhi
-    // "3/3 OLLAMA AI LOCK" bol deta tha — fabricated claim).
+    // HONESTY: the sentinel's honest label — offline it says
+    // "Rule-Based Guard n/3", live it says "Live FreeLLMAPI (...)".
     honestLabel?: string;
     ruleBasedGuard?: boolean;
     liveVerdict?: string | null;
@@ -1063,11 +1064,11 @@ export interface MtfDualRow {
     svaAction?: string | null;
     svaScore?: number | null;
     councilModel?: string | null;
-    ollamaReachable?: boolean;
-    ollamaScanModel?: string;
-    ollamaDeepModel?: string;
-    ollamaTrioModels?: string[];
-    ollamaVerdict?: string;
+    aiGuardReachable?: boolean;
+    aiGuardFastModel?: string;
+    aiGuardDeepModel?: string;
+    aiGuardModels?: string[];
+    aiGuardVerdict?: string;
     councilVerdict?: string | null;
     councilNote?: string | null;
   } | null;
@@ -1145,7 +1146,7 @@ export interface MtfDualBoardView {
   liveFeed24x7?: { active: boolean; cadenceMs: number; directTickOverlay: number; asOf: number };
   // v21.23.1: `avgWinRatePct` ab nullable — missing rows pe fabricated 88 nahi milta.
   worldIndicatorsInfo?: { count: number; names: string[]; targetWinRatePct: number | null; avgWinRatePct: number | null };
-  ollamaTrio?: { reachable: boolean; base?: string; fastModel: string; deepModel: string; sentinelModel: string; models: string[]; count: number; keepAlive?: string };
+  aiGuard?: { reachable: boolean; base?: string | null; profile?: 'smart' | 'balanced' | 'fast'; fastModel: string; deepModel: string; sentinelModel: string; models: string[]; count: number };
   counts?: { rows: number; overBar: number; eligible: number; strong: number; fired: number; earlyRadar?: number; unavailable: number; metalsEligible?: number; equitySimEligible?: number; directionBlocked?: number };
   /** v21.25.0 — board-wide signal→order integrity (certified / blocked / mismatches). */
   directionIntegrity?: DirectionIntegrity | null;

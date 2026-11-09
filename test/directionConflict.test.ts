@@ -14,7 +14,7 @@ import {
   __resetMtfAutoForTests,
 } from '../server/ai/mtfAutoLink.js';
 import { proTraderGate, PROTRADER_DEFAULTS } from '../server/ai/proTraderAuto.js';
-import { evaluateMtfRowWithOllamaTrio } from '../server/ai/llmSentinel.js';
+import { evaluateMtfRowWithAiGuard } from '../server/ai/llmSentinel.js';
 import {
   recordMtfBoardScanRow,
   resolveMtfBoardScanOutcomes,
@@ -203,7 +203,7 @@ describe('P0 direction conflict guards (fuseDualTf + Phase 0–3 Direction Accur
     expect(res.candidates).toBe(0);
   });
 
-  it('P1-1 & P1-2: exposes scoreBand, heuristicConfluencePct, pWinCalibrated, and non-circular Ollama Trio ruleBasedGuard', () => {
+  it('P1-1 & P1-2: exposes scoreBand, heuristicConfluencePct, pWinCalibrated, and non-circular AI Guard ruleBasedGuard', () => {
     const uncalBoard = {
       side: 'LONG',
       superIntel: { aiScore: 84, winProb: { verdict: 'EDGE', pWin: 64, evR: 0.7, calibrated: false } },
@@ -213,8 +213,8 @@ describe('P0 direction conflict guards (fuseDualTf + Phase 0–3 Direction Accur
     expect(r.heuristicConfluencePct).toBeGreaterThanOrEqual(75);
     expect(r.pWinCalibrated).toBeNull();
 
-    // Non-circular Ollama Trio: even with estimatedWinRatePct omitted, clean aligned row gets 3/3 rule-based guard
-    const trioClean = evaluateMtfRowWithOllamaTrio({
+    // Non-circular AI Guard: even with estimatedWinRatePct omitted, clean aligned row gets 3/3 rule-based guard
+    const trioClean = evaluateMtfRowWithAiGuard({
       symbol: 'SOL',
       side: 'LONG',
       superScore: 85,
@@ -227,8 +227,8 @@ describe('P0 direction conflict guards (fuseDualTf + Phase 0–3 Direction Accur
     expect(trioClean.ruleBasedGuard).toBe(true);
     expect(trioClean.honestLabel).toContain('Rule-Based Guard 3/3');
 
-    // Cross-engine conflict drops Ollama Trio approval below 2
-    const trioConflict = evaluateMtfRowWithOllamaTrio({
+    // Cross-engine conflict drops AI Guard approval below 2
+    const trioConflict = evaluateMtfRowWithAiGuard({
       symbol: 'SOL',
       side: 'LONG',
       superScore: 85,
