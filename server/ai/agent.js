@@ -1783,7 +1783,10 @@ ${convictionTightened.map(c => `• ${c.pair} — delta ${c.delta}, in profit: r
       const simCnt = realEnts.filter(e => e.market === 'GLOBALFUTURES').length;
       const futCand = candidates.find(c => c.market === 'FUTURES');
       if (futCand && futCnt <= simCnt) {
-        maybeLogSkip('desk_fairness', `desk-fairness pick: FUTURES ${futCand.symbol} (fut ${futCnt}/sim ${simCnt} aaj) — sim candidate ${best.symbol} ke bajaye`);
+        // Informational re-rank, NOT a skip: the futures candidate below is
+        // the pick this tick. Using maybeLogSkip here put a false "skipped"
+        // line in the panel/status while the agent was actually proceeding.
+        log('info', `desk-fairness pick: FUTURES ${futCand.symbol} (fut ${futCnt}/sim ${simCnt} aaj) - sim candidate ${best.symbol} ke bajaye`);
         best = futCand;
       }
     } catch { /* journal unavailable — normal best pick chalta rahega */ }

@@ -58,6 +58,9 @@ export function engineOk(provider, now = Date.now()) {
   r.consecFails = 0;
   r.cooldownUntil = 0;
   r.lastOkAt = now;
+  // A recovered engine must not keep advertising its old failure in the
+  // health view - the next failure re-stamps this field.
+  r.lastErr = null;
 }
 
 /**
