@@ -57,7 +57,7 @@ const num = (v) => { const n = typeof v === 'number' ? v : parseFloat(String(v ?
 function strongBoardSignal(over = {}) {
   return {
     symbol: 'BTC', market: 'FUTURES', side: 'LONG', grade: 'STRONG',
-    confidence: 80, agreement: 0.75, ltp: 50000, changePct: 2.1,
+    confidence: 80, agreement: 0.75, ltp: 50000, changePct: 2.1, generatedAt: Date.now(),
     plan: { entry: 50000, stopLoss: 48000, target1: 52000, target2: 54000, risk: 2000, riskPct: 4, rewardRisk: 2 },
     quality: { regime: { counterTrend: false }, mtf: { available: true, aligned: true, phase: 'TREND-ALIGNED', agreementPct: 78 } },
     superIntel: { aiScore: 84, tier: 'STRONG' },
@@ -378,6 +378,18 @@ describe('v21.3.0 Issue-4 — futuresExecutePrecheck (dry-run gauntlet + ticket)
     const gate = out.gates.find((g) => g.name === 'Side match');
     expect(gate.pass).toBe(false);
     expect(gate.detail).toContain('flipped');
+  });
+
+  it('an ACTION signal fails the live execution gate (precheck == execute parity)', async () => {
+    const out = await futuresExecutePrecheck({
+      symbol: 'BTC', side: 'LONG',
+      getFreshSignal: async () => strongBoardSignal({ grade: 'ACTION', confidence: 63, agreement: 0.55 }),
+    });
+    const gate = out.gates.find((g) => g.name === 'Execution gate (STRONG/conf/agreement)');
+    expect(gate).toBeTruthy();
+    expect(gate.pass).toBe(false);
+    expect(gate.detail).toContain('STRONG');
+    expect(out.ok).toBe(false);
   });
 
   it('an AI-CONFLICT signal surfaces the warning (visible before any click)', async () => {

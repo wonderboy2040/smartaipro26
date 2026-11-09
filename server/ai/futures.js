@@ -796,6 +796,21 @@ export async function futuresExecutePrecheck(opts) {
       const sideMatch = !side || !signal.side || signal.side === side;
       gate('Side match', sideMatch, sideMatch ? `consensus ${signal.side}` : `board flipped: ${signal.side} vs requested ${side}`);
       if (signal.ucRejected) out.warnings.push('Ultrafast chart verification REJECTED this direction');
+      // v21.36.5 [PRECHECK PARITY]: the real execute gauntlet ALSO requires a
+      // STRONG grade (conf ≥ minConfidence + agreement ≥ minAgreement) for
+      // live orders. The precheck used to show all-green on an ACTION signal,
+      // then the click failed with "grade ACTION — live orders need STRONG".
+      // Run the SAME shared gate here so the modal tells the truth before the
+      // user commits real money.
+      try {
+        const gates = { minConfidence: cfg.minConfidence, minAgreement: cfg.minAgreement };
+        const riskCap = Number(cfg.maxRiskPct) > 0 ? Number(cfg.maxRiskPct) : 5;
+        const verdict = evaluateExecutionGate(signal, {
+          side, gates, requireStrong: true, maxAgeMs: 90_000,
+          maxRiskPct: riskCap, venue: 'FUTURES',
+        });
+        gate('Execution gate (STRONG/conf/agreement)', verdict.ok, verdict.reason);
+      } catch { /* guard unavailable — the execute route still enforces it */ }
       // v21.11: CONFLICT warning me kaun ULTA side pe hai + uski conviction
       // — direction ka pata chalta hai (user ka exact complaint).
       // v21.14: sirf jev provider.
