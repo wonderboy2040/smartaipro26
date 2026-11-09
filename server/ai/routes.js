@@ -3953,8 +3953,17 @@ export function registerAITradingRoutes(app, deps) {
       }));
       if (!pass) return; // previous pass still running — defer to next tick
       const closures = await pass;
-      if (closures.length > 0) {
-        console.log(`[ai] futures watcher closed ${closures.length} position(s): ${closures.map(c => `${c.pair} ${c.pnlINR}`).join(', ')}`);
+      // watchFuturesPositions puts BOTH full closes and partial-TP legs in
+      // the same array; partials carry pnlINR:null by design. Logging them
+      // together said "closed N position(s): ... null" while the runner was
+      // still open — split the two so the log tells the truth.
+      const partials = closures.filter(c => c.partial);
+      const fulls = closures.filter(c => !c.partial);
+      if (fulls.length > 0) {
+        console.log(`[ai] futures watcher closed ${fulls.length} position(s): ${fulls.map(c => `${c.pair} ${c.pnlINR}`).join(', ')}`);
+      }
+      if (partials.length > 0) {
+        console.log(`[ai] futures watcher partial TP: ${partials.map(c => `${c.pair} - ${c.reason}`).join(' | ')}`);
       }
     } catch { /* non-fatal */ }
   }, 30_000);
