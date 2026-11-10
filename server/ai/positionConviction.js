@@ -1,9 +1,9 @@
 // ============================================================
 // server/ai/positionConviction.js — v10.15 GAP 1: LIVE CONVICTION TRACKER
 // ------------------------------------------------------------
-// THE GAP (superintelligence upgrade plan): the 14-model ensemble
+// THE GAP (superintelligence upgrade plan): the committee ensemble
 // that carefully decided "LONG with 82% confidence" goes COMPLETELY
-// SILENT the moment the position opens. If 9 of 14 models flip
+// SILENT the moment the position opens. If most of the committee flips
 // bearish 20 minutes later, nothing reacts until price physically
 // hits a stop. A pro desk re-evaluates a live position continuously;
 // this module makes the ensemble work DURING the trade.

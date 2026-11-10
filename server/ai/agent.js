@@ -204,7 +204,7 @@ export const AGENT_DEFAULTS = {
   winnerExtendMax: 2,         // max extensions per position
   // ---- v10.15 GAP 1: LIVE CONVICTION TRACKER (superintelligence plan) ----
   // OFF by default — enable with AI_ENABLE_CONVICTION_EXIT=true or this
-  // knob. While ON, the same 14-model ensemble that decided the entry
+  // knob. While ON, the same committee ensemble that decided the entry
   // re-votes every open position each tick (via the cached deep path —
   // zero new upstream calls): FLIPPED (opposite-side quorum) → immediate
   // conviction-flip exit; WEAKENING + in-profit → SL ratcheted toward
@@ -1730,7 +1730,7 @@ ${convictionTightened.map(c => `• ${c.pair} — delta ${c.delta}, in profit: r
         return `${a.name || a.id}${why ? ` (${why})` : ''}`;
       });
       if (abst.length > 0) {
-        log('info', `THIN COMMITTEE ${t.symbol} — ${t.voters}/14 models voted; abstained: ${abst.join(' · ')} — data-feed fixes here lift quorum at the source`);
+        log('info', `THIN COMMITTEE ${t.symbol} — ${t.voters} models voted; abstained: ${abst.join(' · ')} — data-feed fixes here lift quorum at the source`);
       }
     }
   }

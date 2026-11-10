@@ -9,7 +9,7 @@
 // used to die with `ok:false "Agent engines unavailable"` the
 // moment Gemini→Groq→Cerebras were all down — and the frontend
 // rendered that object as "[object Object]". But the agent's
-// TOOLS are pure compute (no LLM anywhere): the 14-model
+// TOOLS are pure compute (no LLM anywhere): the committee
 // ensemble, superIntel blueprints, funding, sizing, journal —
 // all live regardless of the language engines.
 //
@@ -112,7 +112,7 @@ export function detectDeskIntent(text, opts = {}) {
 // ------------------------------------------------------------
 // 2. TICKET COMPOSERS — pure formatting over tool results
 // ------------------------------------------------------------
-const INTRO = '⚡ SUPER-INTEL DETERMINISTIC MODE — AI language engines abhi offline hain, par ye answer live desk tools + 14-model ensemble ke EXACT compute se bana hai (zero LLM guessing, har number traceable). Engine auto-retry chalu hai (sentinel half-open) — wapas aate hi prose richer ho jayegi, numbers same rahenge.';
+const INTRO = '⚡ SUPER-INTEL DETERMINISTIC MODE — AI language engines abhi offline hain, par ye answer live desk tools + committee ensemble ke EXACT compute se bana hai (zero LLM guessing, har number traceable). Engine auto-retry chalu hai (sentinel half-open) — wapas aate hi prose richer ho jayegi, numbers same rahenge.';
 
 function voteLine(s) {
   const voters = s.voters ?? s.totalModels;

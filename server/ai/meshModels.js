@@ -14,7 +14,7 @@
 //   16. TechConsensus   0.7  tradingcentral news.sentiment
 //                            (an INDEPENDENT second opinion — computed
 //                            by a different methodology than our own
-//                            14-model TA stack)
+//                            committee TA stack)
 //   17. FundaProPlus    0.55 alphavantage stocks.fundamentals +
 //                            massive fundamentals.profile
 //                            (deepens FundaCheck — India SWING/deep

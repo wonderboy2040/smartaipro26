@@ -57,7 +57,7 @@ export const CRYPTO_AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'get_live_crypto_signals',
-      description: 'Live top high-conviction CoinDCX spot + futures + global equity SIM setups from the 14-model superintelligence ensemble (superIntel AI Score ranking). Each setup carries side, confidence, AI score, entry/SL/T1/T2, R:R, leverage view and model votes. Use this FIRST for desk briefings, "kya buy karu", or market overview questions.',
+      description: 'Live top high-conviction CoinDCX spot + futures + global equity SIM setups from the superintelligence ensemble (superIntel AI Score ranking). Each setup carries side, confidence, AI score, entry/SL/T1/T2, R:R, leverage view and model votes. Use this FIRST for desk briefings, "kya buy karu", or market overview questions.',
       parameters: {
         type: 'object',
         properties: {
@@ -303,7 +303,7 @@ function geminiTools() {
 // ------------------------------------------------------------
 export function buildCryptoSystemPrompt(ctx) {
   const { utcTime, btcRegime, fng, funding, connected, aiOnline } = ctx;
-  return `You are "CRYPTO DESK PRO" — an elite crypto trading desk head (15+ years, CoinDCX India + global perps) running the superintelligence ensemble: 14 core models (trend/momentum/volatility/volume/pattern/SR/options/regime/SMC/MTF-tape/AI-Council) + the V2 accuracy seats when enabled (SentimentPulse news+Fear&Greed+funding sentiment, InstFlow orderbook depth imbalance, FundaCheck valuation) + mesh-backed seats in SHADOW mode (InstFlowPro, TechConsensus, FundaProPlus, CryptoOnChainPro — journaled votes at weight 0 until settled outcomes prove their edge; treat their reads as CONTEXT, not conviction). The AI Council (LLM) verification layer sits on top.
+  return `You are "CRYPTO DESK PRO" — an elite crypto trading desk head (15+ years, CoinDCX India + global perps) running the superintelligence committee: the live quant seats (trend/momentum/volatility/volume/pattern/SR/options/regime/SMC/Classic29/MTF-tape/AI-Council, plus V2 accuracy seats and shadow mesh seats when enabled). The AI Council (LLM) verification layer sits on top.
 
 CURRENT DESK CONTEXT (auto-injected, always trust this over assumptions):
 - UTC time: ${utcTime} (crypto trades 24/7 — no market-closed excuses)
@@ -804,7 +804,7 @@ async function executeCryptoTool(name, args, deps) {
           checklist: v.checklist,
           ltp: s.ltp,
           plan: s.plan ? { entry: s.plan.entry, stopLoss: s.plan.stopLoss, target1: s.plan.target1, target2: s.plan.target2, rewardRisk: s.plan.rewardRisk } : null,
-          note: 'SVA-v1 pro checklist + UCV-A1 realtime ultrafast chart verdict — deterministic layers over the 14-model ensemble. Verdicts ko cite karo; LLM apni marzi se FLIP/CONFIRM override mat karo (agar manna ho to verifier ka verdict bhi bolo). ULTRAFAST REJECTED ho to direction ULTA ja sakti hai — trade avoid bolo.',
+          note: 'SVA-v1 pro checklist + UCV-A1 realtime ultrafast chart verdict — deterministic layers over the committee ensemble. Verdicts ko cite karo; LLM apni marzi se FLIP/CONFIRM override mat karo (agar manna ho to verifier ka verdict bhi bolo). ULTRAFAST REJECTED ho to direction ULTA ja sakti hai — trade avoid bolo.',
         };
       }
 

@@ -181,7 +181,7 @@ export const PRO_TRADER_AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'get_model_consensus',
-      description: 'PER-MODEL VOTE BREAKDOWN for one NSE symbol from the 14-model superintelligence ensemble (TrendMatrix, MomentumQuant, VolatilityScope, VolumeFlow, PatternNeural, SRMatrix, OptionsFlow real chain, MacroRegime, SmartMoneyICT, IntradayTape/MTF, AI Council + V2 seats): every model\'s direction, confidence and reason + the weighted consensus side/confidence/agreement + SVA verifier verdict + LLM second opinion when borderline. Falls back to the scanner\'s quant+AI verdicts when the deep ensemble is cold. Use for "consensus kya bol raha hai", "kaun se models agree", "signal ka reason kya hai".',
+      description: 'PER-MODEL VOTE BREAKDOWN for one NSE symbol from the superintelligence ensemble (TrendMatrix, MomentumQuant, VolatilityScope, VolumeFlow, PatternNeural, SRMatrix, OptionsFlow real chain, MacroRegime, SmartMoneyICT, Classic29, IntradayTape/MTF, AI Council + V2 seats): every model\'s direction, confidence and reason + the weighted consensus side/confidence/agreement + SVA verifier verdict + LLM second opinion when borderline. Falls back to the scanner\'s quant+AI verdicts when the deep ensemble is cold. Use for "consensus kya bol raha hai", "kaun se models agree", "signal ka reason kya hai".',
       parameters: {
         type: 'object',
         properties: {
@@ -418,7 +418,7 @@ async function executeAgentTool(name, args, deps) {
       case 'get_model_consensus': {
         const symbol = String(args.symbol || '').trim().toUpperCase().replace(/[^A-Z0-9&-]/g, '');
         if (!symbol) return { error: 'symbol required (e.g. RELIANCE)' };
-        // PRIMARY: the 14-model deep ensemble (per-model votes).
+        // PRIMARY: the full deep ensemble (per-model votes).
         let d = null;
         try { d = await getDeepSignal?.(symbol); } catch { /* cold */ }
         if (d?.ok && d.signal) {

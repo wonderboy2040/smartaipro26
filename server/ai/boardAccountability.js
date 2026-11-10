@@ -48,7 +48,7 @@ import { committeeInfo } from './committee.js';
 const ENABLED = String(process.env.AI_BOARD_ACCOUNTABILITY || '').toLowerCase() !== 'off';
 
 // v21.13: build the row's pipeline label from the LIVE committee counts
-// (16 voting + 4 mesh shadow today — never a stale hardcoded number).
+// (live committee counts today — never a stale hardcoded number).
 function _committeeLabel() {
   try {
     const ci = committeeInfo();

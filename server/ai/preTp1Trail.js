@@ -93,7 +93,6 @@ const LOCK_THRESHOLD_VOL_SHIFT = Object.freeze({ LOW: -0.10, NORMAL: 0, HIGH: 0.
  *  se neeche nahi jaata. Ordering invariant: same peakR par
  *  NORMAL lock > HIGH lock > EXTREME lock (profit-lock floor). */
 const LOCK_VOL_SCALE = Object.freeze({ LOW: 1.0, NORMAL: 1.0, HIGH: 0.75, EXTREME: 0.50 });
-const ADVERSE_GEAR1_TICK_PCT = -0.02;    // routine reversal (existing gear)
 const ADVERSE_GEAR2_TICK_PCT = -0.04;    // strong reversal in 3s tick window
 const ADVERSE_GEAR1_FACTOR = 0.65;       // legacy tighten factor
 const ADVERSE_GEAR1_FLOOR_R = 0.15;      // legacy floor

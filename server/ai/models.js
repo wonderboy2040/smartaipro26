@@ -74,7 +74,7 @@ function vote(dir, conf, reasons, na = false) {
 // ------------------------------------------------------------
 // Phase 4 wiring per the upgrade plan: all 3 entries are gated by
 // AI_ENABLE_V2_MODELS so the rollout can run a clean A/B (flag OFF =
-// the exact 11-model ensemble that ships today; flag ON = 14 models)
+// the base committee (14 seats today); flag ON = +3 V2 seats)
 // before going live for real users. Default OFF — enable with
 // AI_ENABLE_V2_MODELS=true (also accepts 1/on/yes).
 import { sentimentVote } from './sentiment.js';

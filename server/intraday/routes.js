@@ -891,7 +891,7 @@ export function registerIntradayRoutes(app, deps) {
     getPaperSummary,
     analyzeSymbol,
     getMarketRegime,
-    // v13.2 A5: the 14-model superintelligence deep ensemble (per-model
+    // v13.2 A5: the superintelligence committee deep ensemble (per-model
     // votes) — powers get_model_consensus on the India desk.
     getDeepSignal: (symbol) => getAiDeepSignal(symbol, 'INDIA', { KEYS, OPENAI_COMPAT }, {}),
   };

@@ -112,7 +112,6 @@ export function evaluateMonteCarloOddsGate({
   const N = Math.min(100_000, Math.max(200, Math.floor(_num(scenarios, 4000))));
   const H = Math.min(480, Math.max(4, Math.floor(_num(horizonSteps, 48))));
   const rng = _mulberry32(Number.isFinite(Number(seed)) ? Number(seed) : 1337);
-  const t1R = Math.abs(t1 - entry) / risk;
   const t2R = Math.abs(t2 - entry) / risk;
 
   let nStop = 0, nTarget = 0, nGreen = 0, sumR = 0;

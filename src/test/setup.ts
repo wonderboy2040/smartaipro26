@@ -58,7 +58,7 @@ process.env.AI_ENABLE_MTF_CONFLUENCE ??= 'false';
 // DEFAULT ON hai aur uske ON hone par upar wale teeno legacy pins
 // IGNORED ho jaate hain — isliye legacy suites ke liye MASTER ko
 // bhi explicit 'false' pin karna zaroori hai (warna 202 files
-// phir se 20-seat registry dekh lenge). AI_ENABLE_META_ENSEMBLE
+// phir se full committee registry dekh lenge). AI_ENABLE_META_ENSEMBLE
 // bhi v21.12 se DEFAULT ON hai — aggregateVotesWithMeta callers
 // (v2094 etc.) 'flag OFF by default in test env' assumption pe
 // likhe hain. Naye defaults `test/v2112MasterSwitch.test.ts` +

@@ -9,7 +9,7 @@
 // the desk gives its own positions:
 //
 //   • the ORIGINATING SIGNAL SNAPSHOT is frozen at entry — the plan
-//     (entry/SL/T1/T2), the 14-model vote breakdown, the regime label,
+//     (entry/SL/T1/T2), the committee vote breakdown, the regime label,
 //     and the AI score. "Trend change" is measured AGAINST this
 //     baseline; without it there is nothing to compare to.
 //   • LIVE tracking: LTP (5s via the live tick store / cached quotes),

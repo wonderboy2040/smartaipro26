@@ -4,7 +4,7 @@
 //   2. /api/ping v == package.json (21.14.0)
 //   3. /api/bots/status — ai.jev shape, NO laya key, layaAutoLink absent
 //   4. /api/bots/ai/laya-status → 404 (endpoint removed)
-//   5. /api/health — ai.jev only (no laya), committee 16+4 intact
+//   5. /api/health — ai.jev only (no laya), committee snapshot self-consistent
 //   6. signals endpoints respond (Trading Signals undisturbed)
 import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -104,7 +104,7 @@ try {
     ok('5a. /api/health ai me laya ABSENT', h.json?.ai ? !('laya' in h.json.ai) : true, `ai keys=${h.json?.ai ? Object.keys(h.json.ai).join(',') : 'none'}`);
     const h2 = await get('/health', 20000).catch(() => ({ json: null }));
     const c = h2.json?.committee || h.json?.committee;
-    ok('5b. committee intact (16 voting + 4 mesh shadow)', c ? (c.voting === 16 && c.shadow === 4) : false, JSON.stringify(c)?.slice(0, 120));
+    ok('5b. committee intact (voting + shadow == total)', c ? (Number.isFinite(c.total) && Number.isFinite(c.voting) && Number.isFinite(c.shadow) && c.total > 0 && c.voting >= 1 && c.voting + c.shadow === c.total) : false, JSON.stringify(c)?.slice(0, 120));
 
     // 6. Trading signals undisturbed — board endpoint responds with signals/meta shape
     const sg = await get('/api/ai/signals?market=CRYPTO', 60000);

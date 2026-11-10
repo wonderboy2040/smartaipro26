@@ -300,7 +300,7 @@ export function mtfABReport() {
 // ---------------- v10.6: windowed per-model performance (Pro Upgrade #5) ----------------
 /**
  * Per-model win/loss attribution over ROLLING windows (30d + 90d) —
- * the dashboard's "which of the 14 models is actually pulling its
+ * the dashboard's "which committee models are actually pulling their
  * weight THIS MONTH" view. Same attribution rule as ledger.modelStats
  * (a model whose recorded dir matched the trade's outcome gets win
  * credit), but time-boxed by the entry's SETTLE time.

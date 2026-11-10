@@ -30,7 +30,7 @@
 //   • VolumeFlow fold-in (the plan's "cheaper to ship first"
 //     route): the board attaches ctx.depth for the top-turnover
 //     slice; the VolumeFlow seat weighs it (zero change to the
-//     14-model registry, quorum caps, or weight tuning).
+//     committee registry, quorum caps, or weight tuning).
 //
 // FUTURES desk: CoinDCX perp depth is not public — the spot INR
 // book votes as a PROXY (same precedent as InstFlow, flagged).

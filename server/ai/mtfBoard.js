@@ -41,8 +41,8 @@
 // ============================================================
 import { rawTfCandles } from './mtf.js';
 import { computeIndicatorsFromCandles, atr as atrOf, emaSeries } from './lib/indicators.js';
-import { INDIA_UNIVERSE, CRYPTO_UNIVERSE } from './data.js';
-import { computeSuperScore, superTier, buildSuperBlueprint, SUPER_TIERS } from './superIntel.js';
+import { CRYPTO_UNIVERSE } from './data.js';
+import { computeSuperScore, superTier, buildSuperBlueprint } from './superIntel.js';
 
 // ---------------- mode config ----------------
 export const MTF_MODES = {
@@ -310,7 +310,7 @@ export function buildActionPlan(actionCandles, analysis, market, cfg) {
   //    band) aur reversal/hold candle band hui. Best risk entry.
   // 2) BREAKOUT — analysis-TF key level tod + volume confirm.
   // 3) MOMENTUM-CROSS — MACD hist fresh flip + RSI zone + trend side.
-  let trigger = null, triggerNote = '', entry = null, zoneLo = null, zoneHi = null, slBasis = null;
+  let trigger = null, triggerNote = '', entry = null, zoneLo = null, zoneHi = null;
 
   const nearEma = Math.abs(close - ema20) <= 1.0 * a;
   const emaHold = long ? (close >= ema20 || (bullBar && Math.abs(close - ema20) <= 1.0 * a)) : (close <= ema20 || (!bullBar && Math.abs(close - ema20) <= 1.0 * a));
@@ -333,7 +333,6 @@ export function buildActionPlan(actionCandles, analysis, market, cfg) {
     zoneLo = entry - 0.3 * a; zoneHi = entry + 0.3 * a;
   } else {
     // momentum-cross: hist sign flipped in last 3 bars
-    const closes = actionCandles.map(c => c.close);
     const hist3 = macdSeriesHist(actionCandles);
     const freshFlip = hist3 ? (long ? hist3.flippedUp : hist3.flippedDown) : false;
     const rsiZone = long ? (rsiV != null && rsiV > 52 && rsiV < 72) : (rsiV != null && rsiV < 48 && rsiV > 28);
@@ -456,7 +455,7 @@ function macdSeriesHist(candles) {
 // ------------------------------------------------------------
 // Confluence score — TF ALIGNMENT se accuracy (count se nahi)
 // ------------------------------------------------------------
-function confluenceScore(analysis, action, cfg) {
+function confluenceScore(analysis, action, _cfg) {
   let score = 0;
   const bias = analysis?.bias;
   if (bias === 'NEUTRAL' || !bias) return 0;
@@ -664,7 +663,7 @@ function superLayer(analysis, action, cfg, score, stale) {
 // ------------------------------------------------------------
 // Per-symbol signal builder (async — candle fetch + pure reads)
 // ------------------------------------------------------------
-export async function buildMtfBoardSignal(symbol, market, modeKey, opts = {}) {
+export async function buildMtfBoardSignal(symbol, market, modeKey, _opts = {}) {
   const sym = String(symbol || '').trim().toUpperCase();
   const mkt = String(market || 'INDIA').toUpperCase() === 'CRYPTO' ? 'CRYPTO' : 'INDIA';
   const cfg = MTF_MODES[modeKey] || MTF_MODES.intraday;
