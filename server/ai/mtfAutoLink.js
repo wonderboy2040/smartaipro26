@@ -226,8 +226,20 @@ export const MTF_AUTO_DEFAULTS = {
   //   • breakoutConfirmGate: aakhri CLOSED bar ki close-based confirm
   //     (wick-immune) — trade ke against close hui bar = fake-out signature →
   //     block (enforce me). STALE confirming bar (freshMin se pehle) bhi block.
-  mcOddsGate: 'shadow',
-  breakoutConfirmGate: 'shadow',
+  //   v21.36.3 [OPERATOR DECISION — LIVE-SITE RECHECK]: dono ab ENFORCE
+  //   default hain. v21.35.4–.5 me shadow-first rollout (n≥30 evidence)
+  //   hamesha aaya hi nahi, aur live shadow stats pehle se batate the:
+  //   monteCarloOdds 7 decisions me 3 would-block (neg-edge+stop-heavy),
+  //   lateWave 1 would-block — matlab weak/late entries aage ja rahi thin,
+  //   jo user ke saamne "trade against-signal" dikhta tha (signal side sahi
+  //   hoti thi — candles/board/FreeLLMAPI teeno aligned; GALAT entry QUALITY
+  //   thi: overextended/late-wave/neg-EV/chop). Enforce me in teeno gates
+  //   (mcOdds + breakoutConfirm + lateWave) ka fail-open design same hai:
+  //   missing/stale data par entry BLOCK nahi hoti, sirf pakke bad-signal
+  //   signatures hi rokti hain. Shadow/enforce ab operator override hai
+  //   (config ya env — MC_ODDS_GATE / LATE_WAVE_GATE / BREAKOUT_CONFIRM_GATE).
+  mcOddsGate: 'enforce',
+  breakoutConfirmGate: 'enforce',
   mcOddsMinEvR: 0.1,
   mcOddsMaxPStopPct: 55,
   mcOddsScenarios: 4000,
@@ -237,8 +249,9 @@ export const MTF_AUTO_DEFAULTS = {
   // Sirf trend-end ke closed-bar signatures par entry ko (enforce me)
   // block karta hai: wave range ka >=85% consume, ya live price se T1 zone
   // par pehle se <0.5R reha aur wave mid/ke aage. Flat/chop par fail-open.
-  // Shadow default — evidence record karke enforce ke liye n>=30 data chahiye.
-  lateWaveGate: 'shadow',
+  // v21.36.3: ENFORCE default (upare mcOdds note dekho) — "trend over hone ke
+  // baad entry" user-reported failure mode ki seedhi bandish.
+  lateWaveGate: 'enforce',
   lateWaveMaxProgressPct: 85,
   lateWaveMinT1RemainR: 0.5,
   // v21.30.0 [SIGNAL TIMING + DIRECTION]: fail-open entry-timing guard.
@@ -547,14 +560,14 @@ function _sanitizeCfg(cfg) {
   out.scoreCalibration = normalizeGuardMode(cfg.scoreCalibration, 'off');
   out.runnerAfterTp2 = normalizeGuardMode(cfg.runnerAfterTp2, 'off');
   out.stallExit = normalizeGuardMode(cfg.stallExit, 'off');
-  // v21.35.4 [PRE-TRADE HIGHER-PROFIT GATES] — Monte-Carlo odds + last-closed-
-  // bar breakout-confirm. Conservative default shadow (observe only), never
-  // silently enforce on an unknown/legacy value.
-  out.mcOddsGate = normalizeGuardMode(cfg.mcOddsGate, 'shadow');
-  out.breakoutConfirmGate = normalizeGuardMode(cfg.breakoutConfirmGate, 'shadow');
-  // v21.35.5 [LATE-WAVE GATE] — shadow default; unknown/legacy → shadow
-  // (observe-only), never silently enforce.
-  out.lateWaveGate = normalizeGuardMode(cfg.lateWaveGate, 'shadow');
+  // v21.35.4 [PRE-TRADE HIGHER-PROFIT GATES] — v21.36.3: ENFORCE default.
+  // Explicit operator values (shadow/off/enforce) are always honored; an
+  // unknown/legacy value now falls back to the enforce default (the live
+  // recheck decision — see the defaults block note), not to observe-only.
+  out.mcOddsGate = normalizeGuardMode(cfg.mcOddsGate, 'enforce');
+  out.breakoutConfirmGate = normalizeGuardMode(cfg.breakoutConfirmGate, 'enforce');
+  // v21.35.5 [LATE-WAVE GATE] — v21.36.3: enforce default (same note).
+  out.lateWaveGate = normalizeGuardMode(cfg.lateWaveGate, 'enforce');
   out.eventSessionFilterSessions = cfg.eventSessionFilterSessions !== false;
   out.regimeBlockChop = cfg.regimeBlockChop !== false;
   out.regimeBlockHighVol = cfg.regimeBlockHighVol === true;
@@ -965,14 +978,16 @@ export function scoreCalibrationMode() { return _guardMode('scoreCalibration', '
 export function runnerAfterTp2Mode() { return _guardMode('runnerAfterTp2', 'RUNNER_AFTER_TP2', 'off'); }
 export function stallExitMode() { return _guardMode('stallExit', 'STALL_EXIT', 'off'); }
 export function entryTimingGuardMode() { return _guardMode('entryTimingGuard', 'ENTRY_TIMING_GUARD', 'enforce'); }
-// v21.35.4 — pre-trade higher-profit gates. Default `shadow` (evidence only —
-// nothing blocks) so the harness can build n≥30 before a human flips enforce.
-export function mcOddsGateMode() { return _guardMode('mcOddsGate', 'MC_ODDS_GATE', 'shadow'); }
-export function breakoutConfirmGateMode() { return _guardMode('breakoutConfirmGate', 'BREAKOUT_CONFIRM_GATE', 'shadow'); }
-// v21.35.5 — late-wave / exhaustion gate (trend-end entry blocker). Shadow
-// default — evidence-only until n≥30 per-bucket data exists, then a human
-// flips enforce. Env: LATE_WAVE_GATE.
-export function lateWaveGateMode() { return _guardMode('lateWaveGate', 'LATE_WAVE_GATE', 'shadow'); }
+// v21.35.4 — pre-trade higher-profit gates. v21.36.3: ENFORCE default (live
+// recheck decision — weak/late entries were the user-visible "against-signal"
+// loss source; the direction side was correct all along). An operator can
+// still dial any of these back to shadow via config or env (MC_ODDS_GATE /
+// LATE_WAVE_GATE / BREAKOUT_CONFIRM_GATE).
+export function mcOddsGateMode() { return _guardMode('mcOddsGate', 'MC_ODDS_GATE', 'enforce'); }
+export function breakoutConfirmGateMode() { return _guardMode('breakoutConfirmGate', 'BREAKOUT_CONFIRM_GATE', 'enforce'); }
+// v21.35.5 — late-wave / exhaustion gate (trend-end entry blocker). v21.36.3:
+// enforce default (same note). Env: LATE_WAVE_GATE.
+export function lateWaveGateMode() { return _guardMode('lateWaveGate', 'LATE_WAVE_GATE', 'enforce'); }
 // v21.31.0 — per-call override exists for tests/shadow previews; otherwise env
 // wins over persisted config, matching the R3–R9 rollout convention.
 // v21.32.0 [G10]: fallback default enforce → shadow (LIVE-SMALL #1–#2 pending).
