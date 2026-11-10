@@ -53,6 +53,10 @@ import { evaluateEntryTiming } from './mtfEntryTiming.js';
 import { buildFeatureVector } from './lib/featureVector.js';
 import { classifySignalFamily, evaluateFamilyFit, evaluateHierarchicalMtf } from './signalFamilies.js';
 import { evaluateMetaGate } from './metaModel.js';
+// v21.36.0 CLASSIC 29 — regime-weighted 29-strategy consensus cross-check.
+import {
+  evaluateStrategies, strategyFitScore, compactStrategyConsensus,
+} from './lib/strategies/index.js';
 // v21.32.0 [PHASE B3]: tick→row latency P50/P95 recorder (honest measurement).
 import { latencyRecorder } from './lib/latencyStats.js';
 // v21.23.11 MIRROR-SHIELD L2: live-tick stamp forming bar = TRUE newest.
@@ -151,7 +155,7 @@ export function mainAiSnapshot(boardSig) {
   };
 }
 
-export function fuseDualTf({ symbol, market, boardSig = null, plan = null, snap = null, modeId = 'INTRADAY' }) {
+export function fuseDualTf({ symbol, market, boardSig = null, plan = null, snap = null, modeId = 'INTRADAY', strategyConsensus = null }) {
   const side = normalizeSide(plan?.side);
   const dir = side === 'LONG' ? 1 : side === 'SHORT' ? -1 : 0;
   const boardSideMatches = !boardSig?.side || !side || String(boardSig.side).toUpperCase() === side;
@@ -253,6 +257,36 @@ export function fuseDualTf({ symbol, market, boardSig = null, plan = null, snap 
     score += 2; drivers.push(`AI Council / FreeLLMAPI (${councilModel}) CONFIRM (+2)`);
   } else if (councilV === 'AVOID' || councilV === 'DISAGREE' || councilV === 'SKIP') {
     score -= 5; drivers.push(`AI Council / FreeLLMAPI ${councilV} (−5)`);
+  }
+
+  // ---- v21.36.0 29-CLASSIC-STRATEGY CONSENSUS (regime-weighted) ----
+  // The strategy engine is an INDEPENDENT cross-check on the plan side:
+  // aligned consensus adds a bounded bonus; a high-conviction opposite
+  // consensus subtracts and (≥75) caps the row at WATCH. Neutral/low-
+  // conviction reads never move the score — silence is not opposition.
+  const strat = strategyConsensus?.ok ? strategyConsensus : null;
+  let strategyFit = 'NEUTRAL';
+  if (strat) {
+    if (dir === 0 || !strat.side) {
+      strategyFit = strat.side ? 'DIVERGENT' : 'NEUTRAL';
+    } else if (strat.side === side) {
+      const bonus = strategyFitScore(strat, side);
+      if (bonus > 0) {
+        score += bonus;
+        drivers.push(`29-strategy consensus ${strat.votesFor}/${strat.readyCount} ${side} ${strat.confidence}% (+${bonus})`);
+      }
+      strategyFit = 'CONFIRM';
+    } else {
+      const penalty = -strategyFitScore(strat, side);
+      strategyFit = 'CONFLICT';
+      if (penalty > 0) score -= penalty;
+      if (strat.confidence >= 75) {
+        cap = cap == null ? 64 : Math.min(cap, 64);
+        gates.push(`29-strategy consensus ${strat.side} ${strat.confidence}% vs MTF ${side} — capped 64`);
+      } else if (penalty > 0) {
+        drivers.push(`29-strategy consensus ${strat.side} ${strat.confidence}% vs MTF ${side} (−${penalty})`);
+      }
+    }
   }
 
   // ---- P0 DIRECTION GUARDS (audit/direction-guards) -------------------------
@@ -544,6 +578,8 @@ export function fuseDualTf({ symbol, market, boardSig = null, plan = null, snap 
     bias: plan?.bias ?? null,
     trendDir, triggerDir: trigDir, extendedDir: ext,
     htfBias: snap?.ok ? (snap.htfBias ?? null) : null,
+    strategyConsensus: compactStrategyConsensus(strat),
+    strategyFit,
     counterHtf,
     dualAligned, tripleAligned,
     earlyIgnition, reversalRisk,
@@ -959,7 +995,21 @@ export async function buildDualRow({ symbol, market, boardSig = null, modeId = '
     const htfSnap = await buildHtfBiasSnapshot(sym, mkt).catch(() => null);
     if (htfSnap?.ok) snapAligned = htfSnap;
   }
-  const fuse = fuseDualTf({ symbol: sym, market: mkt, boardSig, plan, snap: snapAligned, modeId: mode.id });
+  // v21.36.0 CLASSIC 29: compute the regime-weighted 29-strategy
+  // consensus from the ACTION timeframe (trigger candles preferred —
+  // that is where entry timing lives). MTF_STRATEGY_CONSENSUS=off is the
+  // kill-switch; insufficient candles → null (honest missing, no score).
+  const strategyConsensus = (() => {
+    try {
+      const off = ['off', '0', 'false', 'no', 'disable', 'disabled']
+        .includes(String(process.env.MTF_STRATEGY_CONSENSUS || '').trim().toLowerCase());
+      if (off) return null;
+      const bars = (Array.isArray(trigCandles) && trigCandles.length >= 60) ? trigCandles : ctxCandles;
+      if (!Array.isArray(bars) || bars.length < 40) return null;
+      return evaluateStrategies(bars, { side: plan?.side ?? null, market: mkt, modeId: mode.id });
+    } catch { return null; }
+  })();
+  const fuse = fuseDualTf({ symbol: sym, market: mkt, boardSig, plan, snap: snapAligned, modeId: mode.id, strategyConsensus });
   // v21.35.0 [A2 MEAN-REV PLUMB]: MEAN_REV_ENABLED ko row-build par ek baar
   // padte hain aur classifySignalFamily/evaluateFamilyFit dono ko plumb
   // karte hain — pehle flag kahin pass hi nahi hota tha, isliye flag-gated

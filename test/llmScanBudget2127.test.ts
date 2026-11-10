@@ -81,8 +81,8 @@ describe('FreeLLMAPI bounded scan budget', () => {
 
   it('default scan budget is 60s and deep budget stays 180s (source contract)', () => {
     const src = fs.readFileSync(path.join(APP_ROOT, 'server', 'ai', 'llmChain.js'), 'utf8');
-    expect(src).toMatch(/FREELLMAPI_SCAN_TIMEOUT_MS\)\s*\|\|\s*60_000/);
-    expect(src).toMatch(/FREELLMAPI_DEEP_TIMEOUT_MS\)\s*\|\|\s*180_000/);
+    expect(src).toMatch(/FREELLMAPI_SCAN_TIMEOUT_MS'\)\s*\|\|\s*_envMs\('FREELLMAPI_TIMEOUT_MS'\)\s*\|\|\s*60_000/);
+    expect(src).toMatch(/FREELLMAPI_DEEP_TIMEOUT_MS'\)\s*\|\|\s*_envMs\('FREELLMAPI_TIMEOUT_MS'\)\s*\|\|\s*180_000/);
     expect(src).toMatch(/return deep \? DEEP_TIMEOUT_MS : SCAN_TIMEOUT_MS;/);
     expect(src).toMatch(/const budget = _timeoutMs\(deep, opts\.timeoutMs\);/);
     expect(src).toMatch(/timeoutMs: budget,/);

@@ -3,10 +3,12 @@
 // User-facing end-to-end proof:
 //   1. Server fresh env (sirf zaroori vars, NO AI_* flags — bilkul
 //      user ke jaise jiska .env flags nahi rakhta) pe boot hota hai.
-//   2. Boot log me committee banner dikhta hai (16 voting + 4 shadow).
-//   3. /health me committee snapshot 20/16/4 + META ARMED @ 8100.
+//   2. Boot log me committee banner dikhta hai (registry-derived
+//      voting/mesh-shadow counts — v21.36.0: 29-strategy seat added).
+//   3. /health me committee snapshot registry ke counts se match karta hai
+//      + META ARMED @ 8100.
 //   4. /api/ping v == package.json version (code-upgrade guard ka base).
-//   5. Board API ka models array = 20 seats (13-models bug ka proof-fix).
+//   5. Board API ka models array = registry seats (13-models bug ka proof-fix).
 // Exit 0 = sab PASS.
 // ============================================================
 import { spawn } from 'node:child_process';
@@ -70,17 +72,19 @@ try {
   } else {
     ok('server boot UP on :' + PORT);
 
-    // 1. boot banner
-    if (bootLog.includes('committee: 16 voting + 4 mesh shadow')) ok('boot banner: "16 voting + 4 mesh shadow" dikha');
-    else fail('boot banner missing — superintel lines: ' + (bootLog.split('\n').filter((l) => l.includes('superintel]')).join(' | ') || 'koi nahi'));
-
+    // 1. boot banner — v21.36.0: counts registry-derived hain (29-strategy
+    //    seat add hone par bhi script stale nahi hoti). Banner aur /health
+    //    ka SAME snapshot hona chahiye; mismatch = "13 vs 16 models" bug.
     // 2. /health committee
     const h = (await getJson('/health')).json;
     const c = h.committee;
-    if (c && c.total === 20 && c.voting === 16 && c.shadow === 4) {
-      ok(`/health committee: total=${c.total} voting=${c.voting} shadow=${c.shadow} tape=${c.tapeSeat} w${c.tapeWeight} window=${c.learningWindow}`);
+    const countOk = c && Number.isFinite(c.total) && Number.isFinite(c.voting) && Number.isFinite(c.shadow)
+      && c.total > 0 && c.voting >= 1 && c.voting + c.shadow === c.total;
+    const bannerLine = c ? `committee: ${c.voting} voting + ${c.shadow} mesh shadow` : null;
+    if (countOk && bannerLine && bootLog.includes(bannerLine)) {
+      ok(`boot banner + /health committee: total=${c.total} voting=${c.voting} shadow=${c.shadow} tape=${c.tapeSeat} w${c.tapeWeight} window=${c.learningWindow}`);
     } else {
-      fail('/health committee galat: ' + JSON.stringify(c));
+      fail(`committee snapshot/banner mismatch — superintel lines: ${bootLog.split('\n').filter((l) => l.includes('superintel]')).join(' | ') || 'koi nahi'} | health=${JSON.stringify(c)}`);
     }
     if (c?.meta?.enabled === true && /8100$/.test(c.meta.serviceUrl)) ok(`META ARMED @ ${c.meta.serviceUrl} (default ON — user ask)`);
     else fail('META default ON nahi: ' + JSON.stringify(c?.meta));
@@ -107,6 +111,7 @@ try {
     } catch (e) { console.log('  ℹ️  login skip: ' + e.message); }
 
     let models = null;
+    const expectedModels = c?.total ?? 20;
     for (const ep of ['/api/futures/board', '/api/ai/board?market=FUTURES', '/api/ai/status']) {
       try {
         const { json: b } = await getJson(ep, 25000, cookie);
@@ -114,8 +119,8 @@ try {
         if (Array.isArray(arr) && arr.length) { models = { ep, n: arr.length, ids: arr.map((m) => m.id) }; break; }
       } catch { /* next */ }
     }
-    if (models && models.n === 20) ok(`board (${models.ep}): ${models.n} models — 16 voting + 4 shadow CONFIRMED`);
-    else if (models) fail(`board ${models.ep} par ${models.n} models (20 chahiye): ${models.ids.join(',')}`);
+    if (models && models.n === expectedModels) ok(`board (${models.ep}): ${models.n} models — ${c.voting} voting + ${c.shadow} shadow CONFIRMED`);
+    else if (models) fail(`board ${models.ep} par ${models.n} models (${expectedModels} chahiye): ${models.ids.join(',')}`);
     else console.log('  ℹ️  board endpoint sandbox me data-locked — /health committee hi source of truth (upar verified)');
   }
 } finally {

@@ -184,11 +184,11 @@ const spawnModels = (env: NodeJS.ProcessEnv) => {
 };
 
 describe('v21.11 B — Superintelligence accuracy suite default ON', () => {
-  it('flags UNSET → 20-seat registry: 16 voting + 4 mesh shadow, tape-MTF w1.6', () => {
+  it('flags UNSET → 21-seat registry: 17 voting + 4 mesh shadow, tape-MTF w1.6', () => {
     const r = spawnModels(SANITIZE(process.env));
     expect(r.v2).toBe(true);
     expect(r.mtf).toBe(true);
-    expect(r.n).toBe(20);
+    expect(r.n).toBe(21);
     expect(r.tapeId).toBe('tape-mtf');
     expect(r.tapeW).toBe(1.6);
     for (const id of ['sentiment', 'instflow', 'fundamentals', 'instflowpro', 'techconsensus', 'fundaproplus', 'cryptoonchain']) {
@@ -196,7 +196,7 @@ describe('v21.11 B — Superintelligence accuracy suite default ON', () => {
     }
   });
 
-  it('v21.12 MASTER: stale legacy false + master UNSET → ab bhi 20-seat (stale-.env disease fix)', () => {
+  it('v21.12 MASTER: stale legacy false + master UNSET → ab bhi 21-seat (stale-.env disease fix)', () => {
     // USER BUG: "sirf 13 models hi bata raha hai" — v21.11.0 tak explicit
     // legacy `false` override jeet-ta tha; purane .env wale boxes isi se
     // 13-seat pe pin the. v21.12 me master (default ON) legacy ko ignore
@@ -204,26 +204,26 @@ describe('v21.11 B — Superintelligence accuracy suite default ON', () => {
     const r = spawnModels({ ...SANITIZE(process.env), AI_ENABLE_V2_MODELS: 'false', AI_ENABLE_MESH_MODELS: 'false', AI_ENABLE_MTF_CONFLUENCE: 'false' });
     expect(r.v2).toBe(true);
     expect(r.mtf).toBe(true);
-    expect(r.n).toBe(20);
+    expect(r.n).toBe(21);
     expect(r.tapeId).toBe('tape-mtf');
     expect(r.ids).toContain('sentiment');
     expect(r.ids).toContain('cryptoonchain');
   });
 
-  it('v21.12 ROLLBACK: AI_ACCURACY_SUITE=false + per-flag false → legacy 13-seat board', () => {
+  it('v21.12 ROLLBACK: AI_ACCURACY_SUITE=false + per-flag false → legacy 14-seat board', () => {
     const r = spawnModels({ ...SANITIZE(process.env), AI_ACCURACY_SUITE: 'false', AI_ENABLE_V2_MODELS: 'false', AI_ENABLE_MESH_MODELS: 'false', AI_ENABLE_MTF_CONFLUENCE: 'false' });
     expect(r.v2).toBe(false);
     expect(r.mtf).toBe(false);
-    expect(r.n).toBe(13);
+    expect(r.n).toBe(14);
     expect(r.tapeId).toBe('tape');
     expect(r.tapeW).toBe(1.3);
     expect(r.ids).not.toContain('sentiment');
   });
 
-  it('v21.12 ROLLBACK: AI_ACCURACY_SUITE=false + per-flag unset → v21.11-era legacy defaults (13)', () => {
+  it('v21.12 ROLLBACK: AI_ACCURACY_SUITE=false + per-flag unset → v21.11-era legacy defaults (14)', () => {
     const r = spawnModels({ ...SANITIZE(process.env), AI_ACCURACY_SUITE: 'false' });
     expect(r.v2).toBe(false);
-    expect(r.n).toBe(13);
+    expect(r.n).toBe(14);
     expect(r.tapeId).toBe('tape');
   });
 

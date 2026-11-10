@@ -192,12 +192,12 @@ describe('evaluateExecutionGate — THE order gauntlet', () => {
 });
 
 describe('quant models — voting on synthetic contexts', () => {
-  it('registry has 12 models with sane weights; AI Council has fn=null (LLM layer)', () => {
-    expect(MODELS).toHaveLength(13); // v21.7.0: +MACrossTracker · v6.7: +SmartMoneyICT · v9.3: +IntradayTape · v20.7.4: +StructurePro (BOS/CHoCH + Fib + VP + S/D)
+  it('registry has 14 models with sane weights; AI Council has fn=null (LLM layer)', () => {
+    expect(MODELS).toHaveLength(14); // v21.36.0: +Classic29 grouped seat · v21.7.0: +MACrossTracker · v20.7.4: +StructurePro
     expect(MODELS.find(m => m.id === 'aicouncil')?.fn).toBeNull();
     const total = MODELS.reduce((a, m) => a + m.weight, 0);
     expect(total).toBeGreaterThan(8);
-    expect(total).toBeLessThan(16); // v21.7.0: +MACrossTracker 1.15 → 14.75
+    expect(total).toBeLessThan(17); // v21.36.0: classic 1.0 → 15.75
   });
 
   it('bullish context → TrendMatrix + MomentumQuant vote LONG with reasons', () => {
@@ -273,7 +273,7 @@ describe('quant models — voting on synthetic contexts', () => {
 
   it('model crashes are contained (dir 0 with error reason)', () => {
     const votes = runQuantModels({ market: 'INDIA', symbol: 'X', ltp: null, ind: null, regime: null });
-    expect(votes).toHaveLength(12); // v21.7.0: 13 models − AI Council (fn=null) − v2/mesh flag-off; +MACrossTracker
+    expect(votes).toHaveLength(13); // v21.36.0: 14 models − AI Council (fn=null) = 13 fn seats (v2/mesh flag-off)
     votes.forEach(vt => {
       if (vt.dir !== 0) return; // may legitimately vote from partial data
       expect(vt.conf).toBeGreaterThanOrEqual(0);

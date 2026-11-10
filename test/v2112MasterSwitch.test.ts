@@ -149,7 +149,7 @@ describe('v21.12 B — META ensemble default ON (user ask)', () => {
 // C) committee info + banner
 // ============================================================
 describe('v21.12 C — committee composition visibility', () => {
-  it('suite ON → 20 seats: 16 voting + 4 mesh shadow, tape-MTF w1.6, window 1200, META armed', () => {
+  it('suite ON → 21 seats: 17 voting + 4 mesh shadow, tape-MTF w1.6, window 1200, META armed', () => {
     const out = execFileSync('node', ['-e',
       `delete process.env.AI_ACCURACY_SUITE;
        delete process.env.AI_ENABLE_V2_MODELS; delete process.env.AI_ENABLE_MESH_MODELS;
@@ -160,8 +160,8 @@ describe('v21.12 C — committee composition visibility', () => {
          console.log(JSON.stringify({ info, banner: c.committeeBanner(info) }));
        })`], { cwd: APP, encoding: 'utf8', timeout: 20000 });
     const { info, banner } = JSON.parse(out.trim().split('\n').pop());
-    expect(info.total).toBe(20);
-    expect(info.voting).toBe(16);
+    expect(info.total).toBe(21);
+    expect(info.voting).toBe(17);
     expect(info.shadow).toBe(4);
     expect(info.tapeSeat).toBe('tape-mtf');
     expect(info.tapeWeight).toBe(1.6);
@@ -170,13 +170,13 @@ describe('v21.12 C — committee composition visibility', () => {
     expect(info.meta.enabled).toBe(true);
     expect(info.meta.serviceUrl).toBe('http://127.0.0.1:8100');
     // banner — watchdog log me user ko poora composition dikhna chahiye
-    expect(banner).toContain('16 voting + 4 mesh shadow');
+    expect(banner).toContain('17 voting + 4 mesh shadow');
     expect(banner).toContain('tape-MTF w1.6');
     expect(banner).toContain('window 1200');
     expect(banner).toContain('META ARMED');
   });
 
-  it('legacy A/B (AI_ACCURACY_SUITE=false) → 13 voting + 0 shadow, plain tape w1.3, honest banner', () => {
+  it('legacy A/B (AI_ACCURACY_SUITE=false) → 14 voting + 0 shadow, plain tape w1.3, honest banner', () => {
     const out = execFileSync('node', ['-e',
       `process.env.AI_ACCURACY_SUITE = 'false';
        delete process.env.AI_ENABLE_V2_MODELS; delete process.env.AI_ENABLE_MESH_MODELS;
@@ -186,13 +186,13 @@ describe('v21.12 C — committee composition visibility', () => {
          console.log(JSON.stringify({ info, banner: c.committeeBanner(info) }));
        })`], { cwd: APP, encoding: 'utf8', timeout: 20000 });
     const { info, banner } = JSON.parse(out.trim().split('\n').pop());
-    expect(info.total).toBe(13);
-    expect(info.voting).toBe(13);
+    expect(info.total).toBe(14);
+    expect(info.voting).toBe(14);
     expect(info.shadow).toBe(0);
     expect(info.tapeSeat).toBe('tape');
     expect(info.tapeWeight).toBe(1.3);
     expect(info.accuracySuite).toBe(false);
-    expect(banner).toContain('13 voting + 0 mesh shadow');
+    expect(banner).toContain('14 voting + 0 mesh shadow');
     expect(banner).toContain('tape w1.3 (legacy)');
   });
 });

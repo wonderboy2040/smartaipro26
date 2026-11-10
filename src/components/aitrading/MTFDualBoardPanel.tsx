@@ -113,6 +113,15 @@ const fitCls = (v?: string | null) =>
       : v === 'STRETCH' ? 'text-amber-300 border-amber-500/40 bg-amber-500/10'
         : 'text-red-300 border-red-500/40 bg-red-500/10';
 
+// v21.36.0: the independent 29-strategy consensus is a cross-check, so its
+// chip must read differently from the TF-FIT one — CONFIRM green, CONFLICT
+// red, DIVERGENT (row side vs strategy side) amber, NEUTRAL grey.
+const stratFitCls = (v?: string | null) =>
+  v === 'CONFIRM' ? 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10'
+    : v === 'CONFLICT' ? 'text-red-300 border-red-500/40 bg-red-500/10'
+      : v === 'DIVERGENT' ? 'text-amber-300 border-amber-500/40 bg-amber-500/10'
+        : 'text-slate-400 border-slate-500/30';
+
 // v21.17.0 DEEP AUDIT: jab `d` omit ho (price levels: entry/SL/T1/T2/ltp),
 // server ke `pRoundLadder` ki adaptive precision (2..8dp) preserve karo —
 // warna DOT ($1.09, SL 1.0949, T1 1.0851) ya WLD ($0.47, SL 0.4716) UI me
@@ -1521,6 +1530,15 @@ export const MTFDualBoardPanel = memo(function MTFDualBoardPanel({ market, onDee
             const inst8Aligned = r.worldIndicators?.aligned8Count ?? Math.min(8, worldAligned);
             const inst8List = r.worldIndicators?.institutional8 || [];
             const isPakka = Boolean(r.directionVerified ?? r.worldIndicators?.directionVerified);
+            // v21.36.0: independent 29-strategy cross-check (display only —
+            // the server already applied its bounded bonus/penalty to the score).
+            const sc = r.strategyConsensus || null;
+            const famLine = sc?.families
+              ? Object.entries(sc.families).map(([k, v]) => `${k} ${fmt(v?.net, 2)}`).join(' · ')
+              : '';
+            const stratTitle = sc
+              ? `29-classic-strategy engine (independent): ${sc.side ?? 'no side'} ${sc.confidence}% · ${sc.votesFor} for / ${sc.votesAgainst} against · ${sc.ready}/${sc.total} ready · regime ${sc.regime ?? '—'}${famLine ? ` · ${famLine}` : ''}${sc.top?.length ? ` · top ${sc.top.map(d => d.id).join(', ')}` : ''}${sc.dissent?.length ? ` · dissent ${sc.dissent.map(d => d.id).join(', ')}` : ''}`
+              : '';
             const oppBoardSide = r.boardSide || r.signals?.board?.side || null;
             const hasBoardConflict = Boolean(r.boardSideConflict || (oppBoardSide && r.side && oppBoardSide !== r.side));
             const rowLiveReady = canPaper && !dirBlocked && !!r.directionVerified && !r.counterTrend && !r.counterHtf && !hasBoardConflict && !r.svaConflict && !r.councilConflict
@@ -1731,6 +1749,13 @@ export const MTFDualBoardPanel = memo(function MTFDualBoardPanel({ market, onDee
                     </span>
                   )}
                   {r.grade && <span className="px-1.5 py-0.5 rounded border border-slate-500/30 text-slate-400">grade {r.grade}</span>}
+                  {sc && (
+                    <span
+                      className={`px-1.5 py-0.5 rounded border font-black ${stratFitCls(r.strategyFit)}`}
+                      title={stratTitle}>
+                      29-STRAT {sc.side ?? 'FLAT'}{sc.side ? ` ${sc.confidence}%` : ''}{r.strategyFit ? ` · ${r.strategyFit}` : ''}
+                    </span>
+                  )}
                   <span className="px-1.5 py-0.5 rounded border border-cyan-500/40 bg-cyan-500/10 text-cyan-200 font-black" title="Full 100% CoinDCX Wallet Auto-Deployment + wallet-tier leverage (below ₹10,000 → 10x, ₹10,000+ → 5x)">
                     ⚡ {walletDeployPct}% Wallet · {activeLeverage}x LEV
                   </span>

@@ -1435,6 +1435,200 @@ export function computeWorldTopIndicators(candles, targetSide = null) {
   };
 }
 
+// ---------------- v21.36.0 CLASSIC-STRATEGY INDICATOR PACK ----------------
+// The 29-strategy engine (lib/strategies/*) needs primitives that were
+// missing from the live layer: Parabolic SAR, Heikin-Ashi, Williams %R,
+// CCI, Donchian channel, price Z-score, Keltner channel, rolling VWAP
+// bands and a Bollinger-width percentile. All pure, oldest-first,
+// null-safe — same contract as everything above.
+export function psar(candles, { step = 0.02, max = 0.2 } = {}) {
+  if (!Array.isArray(candles) || candles.length < 4) return null;
+  const st = clampStep(step), mx = clampStep(max);
+  let trend = candles[1].close >= candles[0].close ? 1 : -1;
+  let ep = trend === 1 ? candles[1].high : candles[1].low;
+  let sar = trend === 1 ? candles[0].low : candles[0].high;
+  let af = st;
+  let flipIdx = null;
+  for (let i = 2; i < candles.length; i++) {
+    const c = candles[i];
+    let next = sar + af * (ep - sar);
+    if (trend === 1) {
+      next = Math.min(next, candles[i - 1].low, candles[i - 2].low);
+      if (c.low < next) {
+        trend = -1; next = ep; ep = c.low; af = st; flipIdx = i;
+      } else if (c.high > ep) {
+        ep = c.high; af = Math.min(mx, af + st);
+      }
+    } else {
+      next = Math.max(next, candles[i - 1].high, candles[i - 2].high);
+      if (c.high > next) {
+        trend = 1; next = ep; ep = c.high; af = st; flipIdx = i;
+      } else if (c.low < ep) {
+        ep = c.low; af = Math.min(mx, af + st);
+      }
+    }
+    sar = next;
+  }
+  return {
+    value: sar,
+    dir: trend,
+    ep,
+    flipBars: flipIdx == null ? null : candles.length - 1 - flipIdx,
+  };
+}
+
+export function heikinAshi(candles, { keep = 8 } = {}) {
+  if (!Array.isArray(candles) || candles.length < 3) return null;
+  let prevOpen = (candles[0].open + candles[0].close) / 2;
+  let prevClose = (candles[0].open + candles[0].high + candles[0].low + candles[0].close) / 4;
+  let streak = 0, last = null;
+  const series = [];
+  for (let i = 1; i < candles.length; i++) {
+    const c = candles[i];
+    const haClose = (c.open + c.high + c.low + c.close) / 4;
+    const haOpen = (prevOpen + prevClose) / 2;
+    const haHigh = Math.max(c.high, haOpen, haClose);
+    const haLow = Math.min(c.low, haOpen, haClose);
+    const body = haClose - haOpen;
+    const bull = body > 0;
+    if (Math.abs(body) < 1e-12) streak = 0;
+    else if (bull) streak = streak > 0 ? streak + 1 : 1;
+    else streak = streak < 0 ? streak - 1 : -1;
+    last = { open: haOpen, high: haHigh, low: haLow, close: haClose, bull, body: Math.abs(body) };
+    series.push(last);
+    prevOpen = haOpen; prevClose = haClose;
+  }
+  return {
+    ...last,
+    streak,
+    dir: streak > 0 ? 1 : streak < 0 ? -1 : 0,
+    series: series.slice(-Math.max(1, Math.min(12, keep))),
+  };
+}
+
+export function williamsR(candles, period = 14) {
+  if (!Array.isArray(candles) || candles.length < period) return null;
+  const win = candles.slice(-period);
+  let hh = -Infinity, ll = Infinity;
+  for (const c of win) {
+    if (c.high > hh) hh = c.high;
+    if (c.low < ll) ll = c.low;
+  }
+  if (!(hh > ll)) return null;
+  const close = candles[candles.length - 1].close;
+  return Math.round((((hh - close) / (hh - ll)) * -100) * 100) / 100;
+}
+
+export function cci(candles, period = 20) {
+  if (!Array.isArray(candles) || candles.length < period) return null;
+  const win = candles.slice(-period);
+  const tps = win.map(c => (c.high + c.low + c.close) / 3);
+  const mean = tps.reduce((a, b) => a + b, 0) / period;
+  const md = tps.reduce((a, b) => a + Math.abs(b - mean), 0) / period;
+  if (!(md > 0)) return null;
+  return Math.round((((tps[tps.length - 1] - mean) / (0.015 * md)) * 100)) / 100;
+}
+
+export function donchian(candles, period = 20, exitPeriod = 10) {
+  if (!Array.isArray(candles) || candles.length < period + 1) return null;
+  const channel = (back, per) => {
+    const end = candles.length - back;
+    let hi = -Infinity, lo = Infinity;
+    for (let i = Math.max(0, end - per); i < end; i++) {
+      if (candles[i].high > hi) hi = candles[i].high;
+      if (candles[i].low < lo) lo = candles[i].low;
+    }
+    return hi > -Infinity && lo < Infinity ? { upper: hi, lower: lo } : null;
+  };
+  const cur = channel(0, period);
+  const prior = channel(1, period);
+  const exitCh = channel(1, Math.max(1, exitPeriod));
+  if (!cur || !prior || !exitCh) return null;
+  const close = candles[candles.length - 1].close;
+  const width = cur.upper - cur.lower;
+  return {
+    upper: cur.upper,
+    lower: cur.lower,
+    mid: (cur.upper + cur.lower) / 2,
+    priorUpper: prior.upper,
+    priorLower: prior.lower,
+    exitUpper: exitCh.upper,
+    exitLower: exitCh.lower,
+    breakoutDir: close > prior.upper ? 1 : close < prior.lower ? -1 : 0,
+    position: width > 0 ? (close - cur.lower) / width : 0.5,
+    widthPct: cur.upper + cur.lower > 0 ? (width / ((cur.upper + cur.lower) / 2)) * 100 : null,
+  };
+}
+
+export function priceZScore(closes, period = 50) {
+  if (!Array.isArray(closes) || closes.length < period) return null;
+  const win = closes.slice(-period);
+  const mean = win.reduce((a, b) => a + b, 0) / period;
+  const variance = win.reduce((a, b) => a + (b - mean) ** 2, 0) / period;
+  const sd = Math.sqrt(variance);
+  const last = closes[closes.length - 1];
+  return { z: sd > 0 ? (last - mean) / sd : 0, mean, sd, period };
+}
+
+export function keltner(candles, { period = 20, mult = 2, atrPeriod = 10 } = {}) {
+  if (!Array.isArray(candles) || candles.length < Math.max(period, atrPeriod) + 1) return null;
+  const closes = candles.map(c => c.close);
+  const mid = ema(closes, period);
+  const a = atr(candles, atrPeriod);
+  if (mid == null || a == null || !(a > 0)) return null;
+  const upper = mid + mult * a;
+  const lower = mid - mult * a;
+  return {
+    mid, upper, lower, atr: a,
+    widthPct: mid > 0 ? ((upper - lower) / mid) * 100 : null,
+    position: upper > lower ? (closes[closes.length - 1] - lower) / (upper - lower) : 0.5,
+  };
+}
+
+export function rollingVwapBands(candles, { period = 48, mult = 2 } = {}) {
+  if (!Array.isArray(candles) || candles.length < period) return null;
+  const win = candles.slice(-period);
+  const tps = win.map(c => (c.high + c.low + c.close) / 3);
+  let pv = 0, vol = 0;
+  for (let i = 0; i < win.length; i++) {
+    const v = win[i].volume || 0;
+    pv += tps[i] * v;
+    vol += v;
+  }
+  const meanTp = tps.reduce((a, b) => a + b, 0) / period;
+  const vwapVal = vol > 0 ? pv / vol : meanTp;
+  const variance = tps.reduce((a, tp) => a + (tp - vwapVal) ** 2, 0) / period;
+  const sd = Math.sqrt(variance);
+  const close = candles[candles.length - 1].close;
+  return {
+    vwap: vwapVal,
+    sd,
+    upper: vwapVal + mult * sd,
+    lower: vwapVal - mult * sd,
+    z: sd > 0 ? (close - vwapVal) / sd : 0,
+    period,
+  };
+}
+
+export function bollingerWidthPercentile(closes, { period = 20, lookback = 100 } = {}) {
+  if (!Array.isArray(closes) || closes.length < period + lookback) return null;
+  const widths = [];
+  const start = Math.max(period, closes.length - lookback);
+  for (let end = start; end <= closes.length; end++) {
+    const bb = bollinger(closes.slice(0, end), period);
+    if (bb && Number.isFinite(bb.widthPct)) widths.push(bb.widthPct);
+  }
+  if (widths.length < 20) return null;
+  const cur = widths[widths.length - 1];
+  const below = widths.filter(w => w <= cur).length;
+  return Math.round((below / widths.length) * 100);
+}
+
+function clampStep(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 && n <= 1 ? n : 0.02;
+}
+
 // ---------------- aggregate from candles (one call) ----------------
 export function computeIndicatorsFromCandles(candles) {
   if (!Array.isArray(candles) || candles.length < 30) return null;
@@ -1490,6 +1684,16 @@ export function computeIndicatorsFromCandles(candles) {
     ttmSqueeze: ttmSqueeze(candles),
     stochRsi: stochRsi(closes),
     cvdFlow: cvdVolumeFlow(candles),
+    // v21.36.0 classic-strategy pack
+    psar: psar(candles),
+    heikinAshi: heikinAshi(candles),
+    williamsR: williamsR(candles),
+    cci: cci(candles),
+    donchian: donchian(candles),
+    zScore: priceZScore(closes),
+    keltner: keltner(candles),
+    vwapBands: rollingVwapBands(candles),
+    bbWidthPct: bollingerWidthPercentile(closes),
     worldTop: computeWorldTopIndicators(candles),
     volume: candles[candles.length - 1].volume || 0,
     avgVolume20: candles.slice(-20).reduce((a, c) => a + (c.volume || 0), 0) / Math.min(20, candles.length),

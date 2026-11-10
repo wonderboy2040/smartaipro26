@@ -109,7 +109,7 @@ function _configDirs() {
 /** Root URLs to probe, env first, then the desktop config port. */
 function _candidateRoots() {
   const roots = [];
-  const envUrl = process.env.FREELLMAPI_URL || process.env.FREELLMAPI_BASE_URL;
+  const envUrl = process.env.FREELLMAPI_URL || process.env.FREELLMAPI_BASE_URL || process.env.FREELLMAPI_BASE;
   if (envUrl) roots.push(_cleanBase(envUrl));
   for (const dir of _configDirs()) {
     try {

@@ -1045,6 +1045,18 @@ export interface MtfDualRow {
   counterHtf?: boolean;
   dualAligned?: boolean; tripleAligned?: boolean; triggerFired?: boolean;
   tfFit?: string | null; tfFitNote?: string | null; tfFitRatio?: number | null;
+  /** v21.36.0: independent 29-classic-strategy engine cross-check on this row. */
+  strategyFit?: 'CONFIRM' | 'CONFLICT' | 'DIVERGENT' | 'NEUTRAL' | string | null;
+  strategyConsensus?: {
+    side: 'LONG' | 'SHORT' | null; dir?: number | null;
+    confidence: number; agreement: number; net: number;
+    regime?: string | null; ready: number; total: number;
+    votesFor: number; votesAgainst: number; neutral?: number;
+    fit?: string | null;
+    families?: Record<string, { dir?: number; net?: number; votes?: number; weight?: number; dedicated?: number }>;
+    top?: Array<{ id: string; name?: string; family?: string; strength?: number; reason?: string }>;
+    dissent?: Array<{ id: string; name?: string; family?: string; strength?: number; reason?: string }>;
+  } | null;
   suggestedHoldMin?: number | null; expectedTravelPct?: number | null;
   earlyIgnition?: boolean; reversalRisk?: boolean;
   counterTrend?: boolean; costR?: number | null;

@@ -232,13 +232,13 @@ describe('Phase 3 — FundaCheck (India swing only)', () => {
 describe('Phase 4 — registry wiring + ensemble integration', () => {
   it('MODELS bus in this process matches the AI_ENABLE_V2_MODELS flag', () => {
     // vitest runs without the flag set → the exact production bus
-    expect(MODELS.length).toBe(13); // v21.7.0: +MACrossTracker (12 + macross)
+    expect(MODELS.length).toBe(14); // v21.36.0: +Classic29 · v21.7.0: +MACrossTracker
     expect(MODELS.some(m => m.id === 'macross')).toBe(true); // v21.7.0 Issue-2
     expect(MODELS.some(m => m.id === 'sentiment')).toBe(false);
     // flag-on coverage is enforced by the spawn test below
   });
 
-  it('AI_ENABLE_V2_MODELS=true spawns a 15-model bus with all 3 v2 seats', async () => {
+  it('AI_ENABLE_V2_MODELS=true spawns a 17-model bus with all 3 v2 seats', async () => {
     const { execFileSync } = await import('node:child_process');
     let out = '';
     try {
@@ -251,7 +251,7 @@ describe('Phase 4 — registry wiring + ensemble integration', () => {
     }
     const parsed = JSON.parse(out.trim().split('\n').pop());
     expect(parsed.v2).toBe(true);
-    expect(parsed.n).toBe(16); // v21.7.0: +MACrossTracker (13 base + 3 v2 seats)
+    expect(parsed.n).toBe(17); // v21.36.0: +Classic29 (14 base + 3 v2 seats)
     for (const id of V2_MODEL_IDS) expect(parsed.ids).toContain(id);
     // weights per the plan: 0.7 / 0.8 / 0.5
     expect(parsed.ids).toContain('sentiment');

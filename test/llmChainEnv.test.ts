@@ -177,7 +177,7 @@ describe('councilAsk — FreeLLMAPI routing', () => {
     setAiMode('fast');
     await councilAskDeep('deep prompt', { KEYS: PAID_KEYS });
     expect(_env.calls[0]?.opts.model).toBe('auto:smart');
-    expect(_env.calls[0]?.opts.maxTokens).toBe(3072);
+    expect(_env.calls[0]?.opts.maxTokens).toBe(4096);
     expect(_env.calls[0]?.opts.timeoutMs).toBeGreaterThanOrEqual(120_000);
   });
 

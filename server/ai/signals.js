@@ -1027,14 +1027,35 @@ export function toCouncilCandidate(c) {
  * single-shot prompt AND the v10.8 debate chain (one truth).
  */
 function compactCouncilCandidates(candidates) {
-  return candidates.map(toCouncilCandidate).filter(c => c && c.symbol).map(c => ({
-    sym: c.symbol, side: c.side, conf: c.confidence, ltp: r2(c.ltp),
-    chg: c.changePct, rsi: r2(c.ind?.rsi), adx: r2(c.ind?.adx?.adx),
-    relVol: r2(c.ind?.relVolume), vwapDist: c.ind?.vwap && c.ltp ? r2(((c.ltp - c.ind.vwap) / c.ind.vwap) * 100) : null,
-    atrPct: c.ltp && c.ind?.atr ? r2((c.ind.atr / c.ltp) * 100) : null,
-    plan: c.plan ? { e: c.plan.entry, sl: c.plan.stopLoss, t1: c.plan.target1, t2: c.plan.target2 } : null,
-    votes: (c.votes || []).filter(v => v.dir !== 0).map(v => `${v.name}:${v.dir > 0 ? '+' : '-'}${v.conf}`).join(', '),
-  }));
+  return candidates.map(toCouncilCandidate).filter(c => c && c.symbol).map(c => {
+    // v21.36.0: the grouped Classic29 seat carries its consensus on the
+    // vote itself. Pass a COMPACT strategy block — the council prompt
+    // must see the 29-strategy read, not 29 raw strategy lines.
+    const stratVote = (c.votes || []).find(v => v && v.id === 'classic');
+    const strat = stratVote?.strategyConsensus || null;
+    const fam = {};
+    if (strat?.families) {
+      for (const [k, v] of Object.entries(strat.families)) {
+        if (v && Number.isFinite(Number(v.net))) fam[k] = v.net;
+      }
+    }
+    return {
+      sym: c.symbol, side: c.side, conf: c.confidence, ltp: r2(c.ltp),
+      chg: c.changePct, rsi: r2(c.ind?.rsi), adx: r2(c.ind?.adx?.adx),
+      relVol: r2(c.ind?.relVolume), vwapDist: c.ind?.vwap && c.ltp ? r2(((c.ltp - c.ind.vwap) / c.ind.vwap) * 100) : null,
+      atrPct: c.ltp && c.ind?.atr ? r2((c.ind.atr / c.ltp) * 100) : null,
+      plan: c.plan ? { e: c.plan.entry, sl: c.plan.stopLoss, t1: c.plan.target1, t2: c.plan.target2 } : null,
+      votes: (c.votes || []).filter(v => v.dir !== 0).map(v => `${v.name}:${v.dir > 0 ? '+' : '-'}${v.conf}`).join(', '),
+      strat: strat ? {
+        side: strat.side, conf: strat.confidence, net: strat.net,
+        agree: strat.agreement, regime: strat.regime,
+        ready: strat.ready, f: strat.votesFor, a: strat.votesAgainst,
+        fam,
+        top: (strat.top || []).slice(0, 3).map(d => d.id),
+        dis: (strat.dissent || []).slice(0, 2).map(d => d.id),
+      } : null,
+    };
+  });
 }
 
 // councilAsk itself now comes from ./llmChain.js (the v18.8 shared
@@ -1077,7 +1098,10 @@ export async function aiCouncilDebate(candidates, deps, market, opts = {}) {
       : market === 'GLOBALFUTURES'
         ? 'global equity perpetual futures SIM desk (USDC-margined, 24/7)'
         : 'NSE India (options-led desk)';
-  const data = JSON.stringify(compact, null, 1);
+  const data = JSON.stringify(compact);
+  // v21.36.0: the 29-strategy block is independent evidence, not an order.
+  // A null strat must never be read as bearish/bullish evidence.
+  const stratGuide = '\nEach candidate may carry a compact "strat" block — the independent 29-classic-strategy engine (trend/breakout/momentum/mean-reversion/ICT). side/conf/net/agree/regime + family nets (fam) + top/dissent ids. A high-conviction opposing strat (conf ≥ 60) must be rebutted with numbers; a null strat is NOT evidence either way.';
   // v2 SentimentPulse parity (the legacy single-shot path injects the
   // same context — the debate must not silently lose the feature).
   const sentCtx = v2ModelsEnabled() ? sentimentContextFor(market) : null;
@@ -1091,15 +1115,15 @@ export async function aiCouncilDebate(candidates, deps, market, opts = {}) {
   // the returned object only for the prompt/response contract.
   const [bull, bear] = await Promise.all([
     ask(`You are the BULL ADVOCATE on an institutional investment committee for a ${venue} desk.
-Below are pre-scored consensus candidates from a 14-model quant ensemble. Your ONE job: build the strongest HONEST LONG case for EACH symbol using ONLY the numbers given (RSI/ADX/relVol/VWAP distance/ATR%/plan levels/votes). Never invent data; if a long case is weak, say so honestly and score it low.
+Below are pre-scored consensus candidates from a ${MODELS.length}-model quant ensemble. Your ONE job: build the strongest HONEST LONG case for EACH symbol using ONLY the numbers given (RSI/ADX/relVol/VWAP distance/ATR%/plan levels/votes/strat). Never invent data; if a long case is weak, say so honestly and score it low.
 
-${data}
+${data}${stratGuide}
 
 Respond STRICT JSON only: {"cases":{"SYMBOL":{"case":"2 sentences: the strongest long thesis grounded in the numbers","strength":0-100}}}`, deps),
     ask(`You are the BEAR ADVOCATE on an institutional investment committee for a ${venue} desk.
-Below are the SAME pre-scored consensus candidates. Your ONE job: build the strongest HONEST SHORT case for EACH symbol using ONLY the numbers given (overbought RSI, exhaustion, thin volume, counter-regime, funding/crowding, stop placement risk). Never invent data; if a short case is weak, say so honestly and score it low.
+Below are the SAME pre-scored consensus candidates. Your ONE job: build the strongest HONEST SHORT case for EACH symbol using ONLY the numbers given (overbought RSI, exhaustion, thin volume, counter-regime, funding/crowding, stop placement risk, strat conflict). Never invent data; if a short case is weak, say so honestly and score it low.
 
-${data}
+${data}${stratGuide}
 
 Respond STRICT JSON only: {"cases":{"SYMBOL":{"case":"2 sentences: the strongest short thesis grounded in the numbers","strength":0-100}}}`, deps),
   ]);
@@ -1111,16 +1135,16 @@ Respond STRICT JSON only: {"cases":{"SYMBOL":{"case":"2 sentences: the strongest
 Your bull and bear advocates have argued over these candidates. For EACH symbol you MUST (a) name where the two cases DISAGREE (which numbers each side leans on), and (b) state WHY you side one way. Then issue the verdict. Be strict: an edge must be confluence-driven, not single-factor. Penalize extreme 24h moves, thin books, counter-BTC-regime calls${market === 'GLOBALFUTURES' ? ', and remember these are USDC-margined equity perps' : ''}.
 
 CANDIDATE DATA:
-${data}
+${data}${stratGuide}
 
 BULL ADVOCATE:
-${JSON.stringify(bull.json.cases, null, 1)}
+${JSON.stringify(bull.json.cases)}
 
 BEAR ADVOCATE:
-${JSON.stringify(bear.json.cases, null, 1)}${sentLines}
+${JSON.stringify(bear.json.cases)}${sentLines}
 
 Respond STRICT JSON only (no markdown):
-{"verdicts":{"SYMBOL":{"verdict":"LONG"|"SHORT"|"AVOID","confidence":0-100,"note":"max 12 words","analysis":"2 sentences: where bull/bear disagree + why you side one way — indicator state, timing quality, risk"}}}`, deps);
+{"verdicts":{"SYMBOL":{"verdict":"LONG"|"SHORT"|"AVOID","confidence":0-100,"note":"max 12 words","strategyFit":"CONFIRM"|"CONFLICT"|"NEUTRAL"|null,"analysis":"2 sentences: where bull/bear disagree + why you side one way — indicator state, timing quality, risk"}}}`, deps);
   if (!pm?.json?.verdicts || typeof pm.json.verdicts !== 'object') return null;
 
   // fold the council's optional sentiment read back into the cache
@@ -1193,12 +1217,12 @@ export async function aiCouncilVerify(candidates, deps, market, opts = {}) {
   const askBatch = (batch) => {
     const prompt = `You are the AI COUNCIL — the final verification layer of a ${MODELS.length}-model superintelligence ensemble for a ${venue}.
 
-Below are pre-scored consensus candidates. For EACH, analyze deeply and either CONFIRM or VETO. Be strict: an edge must be confluence-driven, not single-factor.
+Below are pre-scored consensus candidates. For EACH, analyze deeply and either CONFIRM or VETO. Be strict: an edge must be confluence-driven, not single-factor. Each candidate's "strat" block is the independent 29-classic-strategy consensus (side/conf/net/agreement/regime/families) — weigh it as evidence, and rebut a high-conviction conflict (conf ≥ 60) with numbers; null is NOT evidence.
 
-${JSON.stringify(batch, null, 1)}${sentLines}
+${JSON.stringify(batch)}${sentLines}
 
 Respond STRICT JSON only (no markdown):
-{"verdicts":{"SYMBOL":{"verdict":"LONG"|"SHORT"|"AVOID","confidence":0-100,"note":"max 12 words","analysis":"2 sentences: your reasoning chain — indicator state, timing quality, risk"}}}`;
+{"verdicts":{"SYMBOL":{"verdict":"LONG"|"SHORT"|"AVOID","confidence":0-100,"note":"max 12 words","strategyFit":"CONFIRM"|"CONFLICT"|"NEUTRAL"|null,"analysis":"2 sentences: your reasoning chain — indicator state, timing quality, risk"}}}`;
     // The ONE shared FreeLLMAPI chain — sentinel health-aware.
     // opts.deep = true → councilAskDeep (auto:smart) for the deep path
     // (getDeepSignal). The board path follows the active profile.

@@ -35,8 +35,13 @@ export { stripThinking };
 
 // FreeLLMAPI answers are remote (its upstream providers), not CPU-local:
 // a scan verdict is normally 1-10s; deep reasoning can take a minute+.
-const SCAN_TIMEOUT_MS = Number(process.env.FREELLMAPI_SCAN_TIMEOUT_MS) || 60_000;
-const DEEP_TIMEOUT_MS = Number(process.env.FREELLMAPI_DEEP_TIMEOUT_MS) || 180_000;
+// FREELLMAPI_TIMEOUT_MS is the documented shared fallback.
+const _envMs = (name) => {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+const SCAN_TIMEOUT_MS = _envMs('FREELLMAPI_SCAN_TIMEOUT_MS') || _envMs('FREELLMAPI_TIMEOUT_MS') || 60_000;
+const DEEP_TIMEOUT_MS = _envMs('FREELLMAPI_DEEP_TIMEOUT_MS') || _envMs('FREELLMAPI_TIMEOUT_MS') || 180_000;
 
 /** Per-call budget: explicit caller override → deep / scan default. */
 function _timeoutMs(deep, explicit) {
@@ -48,9 +53,12 @@ function _timeoutMs(deep, explicit) {
 function _profileModel(deep) {
   // Deep analysis always asks for the smartest eligible model: a FAST
   // profile is a scan-latency preference, not a reason to weaken the
-  // single-symbol deep verdict.
-  if (deep) return AI_PROFILE_MODELS.smart;
-  return AI_PROFILE_MODELS[getAiMode()] || AI_PROFILE_MODELS.smart;
+  // single-symbol deep verdict. Explicit pins (documented in .env.example)
+  // win over the virtual aliases — useful for pinning a known-good model.
+  if (deep) return String(process.env.FREELLMAPI_DEEP_MODEL || '').trim() || AI_PROFILE_MODELS.smart;
+  const mode = getAiMode();
+  if (mode === 'fast') return String(process.env.FREELLMAPI_FAST_MODEL || '').trim() || AI_PROFILE_MODELS.fast;
+  return AI_PROFILE_MODELS[mode] || AI_PROFILE_MODELS.smart;
 }
 
 function _modelLabel(out, fallbackModel) {

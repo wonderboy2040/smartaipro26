@@ -101,6 +101,16 @@ export function buildFeatureMatrix({ market, symbol, sig, regime, mesh, sentCtx,
     agreement: sig?.agreement ?? null,
     voters: sig?.voters ?? sig?.participating ?? null,
   };
+  // v21.36.0: the grouped Classic29 seat carries the 29-strategy
+  // consensus on its vote — expose it as its own feature block.
+  const strategyVote = votes.find(v => v && v.id === 'classic');
+  const strat = sig?.strategyConsensus || strategyVote?.strategyConsensus || null;
+  const families = {};
+  if (strat?.families) {
+    for (const [k, v] of Object.entries(strat.families)) {
+      if (v && Number.isFinite(Number(v.net))) families[k] = v.net;
+    }
+  }
   return {
     symbol: String(symbol || '').toUpperCase(),
     market: mkt,
@@ -117,6 +127,19 @@ export function buildFeatureMatrix({ market, symbol, sig, regime, mesh, sentCtx,
     },
     mtf: sig?.mtf ? { agreement: sig.mtf.agreement ?? null, dirs: sig.mtf.dirs ?? null } : null,
     ensemble: { consensus, voteLine, superIntel: sig?.superIntel ? { aiScore: sig.superIntel.aiScore, tier: sig.superIntel.tier } : null },
+    strategy: strat ? {
+      side: strat.side ?? null,
+      confidence: strat.confidence ?? null,
+      net: strat.net ?? null,
+      agreement: strat.agreement ?? null,
+      regime: strat.regime ?? null,
+      votesFor: strat.votesFor ?? null,
+      votesAgainst: strat.votesAgainst ?? null,
+      ready: strat.ready ?? null,
+      families: Object.keys(families).length ? families : null,
+      top: (strat.top || []).slice(0, 3).map(d => d?.id).filter(Boolean),
+      fit: strat.fit ?? null,
+    } : null,
     plan: sig?.plan ? {
       entry: sig.plan.entry ?? null, stopLoss: sig.plan.stopLoss ?? null,
       target1: sig.plan.target1 ?? null, target2: sig.plan.target2 ?? null,
@@ -167,7 +190,8 @@ export function priceDivergence(features) {
 }
 
 // ---------------- personas ----------------
-const SCHEMA_HINT = 'Respond STRICT JSON only: {"verdicts":{"SYMBOL":{"direction":"LONG"|"SHORT"|"NEUTRAL","confidence":0-100,"reasons":["max 3 short reasons"],"levels":{"entry":number|null,"stop":number|null,"t1":number|null}}}}';
+const SCHEMA_HINT = 'Respond STRICT JSON only: {"verdicts":{"SYMBOL":{"direction":"LONG"|"SHORT"|"NEUTRAL","confidence":0-100,"reasons":["max 3 short reasons"],"strategyFit":"CONFIRM"|"CONFLICT"|"NEUTRAL"|null,"levels":{"entry":number|null,"stop":number|null,"t1":number|null}}}}';
+const STRAT_HINT = 'A "strategy" block (when present) is the independent 29-classic-strategy engine consensus: side/confidence/net/agreement/families. Weigh it as confluence evidence; a high-conviction CONFLICT (confidence ≥ 60) must lower your confidence or flip you. A null block is NOT evidence either way.';
 const NO_GUESS = 'Anti-hallucination rule: use ONLY the numbers given. Missing data = say so via a LOW confidence, never invent prices, levels or events.';
 
 function personaPrompt(role, market, featuresList) {
@@ -176,23 +200,24 @@ function personaPrompt(role, market, featuresList) {
     : mkt === 'FUTURES' ? 'CoinDCX GLOBAL FUTURES (USDT perpetuals, leveraged)'
     : mkt === 'GLOBALFUTURES' ? 'global equity perpetual futures SIM desk (USDC-margined)'
     : 'CoinDCX crypto spot (INR pairs, 24/7)';
-  const data = JSON.stringify(featuresList, null, 1);
+  const data = JSON.stringify(featuresList);
+  const cand = `${data}\n${STRAT_HINT}`;
   switch (role) {
     case 'technical':
       return `You are the TECHNICAL ANALYST seat of a superintelligence trading council for a ${venue}.
-Your lens: price action, momentum, multi-timeframe alignment, volume, SMC structure. Read the ensemble's own indicator votes as INPUT, then give YOUR independent read of the chart state.\n${NO_GUESS}\n\nCANDIDATES (feature matrices):\n${data}\n\n${SCHEMA_HINT}`;
+Your lens: price action, momentum, multi-timeframe alignment, volume, SMC structure. Read the ensemble's own indicator votes as INPUT, then give YOUR independent read of the chart state.\n${NO_GUESS}\n\nCANDIDATES (feature matrices):\n${cand}\n\n${SCHEMA_HINT}`;
     case 'macro':
       return `You are the MACRO ECONOMIST seat of a superintelligence trading council for a ${venue}.
-Your lens: index/regime direction (NIFTY/NASDAQ/BTC as the desk's barometer), volatility regime, cross-asset correlation, rate-cycle context. A counter-regime trade needs a STRONG reason or a NEUTRAL vote.\n${NO_GUESS}\n\nCANDIDATES:\n${data}\n\n${SCHEMA_HINT}`;
+Your lens: index/regime direction (NIFTY/NASDAQ/BTC as the desk's barometer), volatility regime, cross-asset correlation, rate-cycle context. A counter-regime trade needs a STRONG reason or a NEUTRAL vote.\n${NO_GUESS}\n\nCANDIDATES:\n${cand}\n\n${SCHEMA_HINT}`;
     case 'sentiment':
       return `You are the SENTIMENT ANALYST seat of a superintelligence trading council for a ${venue}.
-Your lens: news mood, crowding, Fear/Greed extremes. Sentiment is a CONTRARIAN at extremes and a CONFIRMER in mid-range. If the sentiment context is missing, vote NEUTRAL with low confidence — never guess the mood.\n${NO_GUESS}\n\nCANDIDATES:\n${data}\n\n${SCHEMA_HINT}`;
+Your lens: news mood, crowding, Fear/Greed extremes. Sentiment is a CONTRARIAN at extremes and a CONFIRMER in mid-range. If the sentiment context is missing, vote NEUTRAL with low confidence — never guess the mood.\n${NO_GUESS}\n\nCANDIDATES:\n${cand}\n\n${SCHEMA_HINT}`;
     case 'optionsflow':
       return `You are the OPTIONS FLOW DESK seat of a superintelligence trading council for a ${venue}.
-Your lens: dealer positioning, OI build-up, put-call positioning, funding/basis crowding. Positive funding with crowded longs = fragility; defensive put writing = supportive.\n${NO_GUESS}\n\nCANDIDATES:\n${data}\n\n${SCHEMA_HINT}`;
+Your lens: dealer positioning, OI build-up, put-call positioning, funding/basis crowding. Positive funding with crowded longs = fragility; defensive put writing = supportive.\n${NO_GUESS}\n\nCANDIDATES:\n${cand}\n\n${SCHEMA_HINT}`;
     case 'onchain':
       return `You are the ON-CHAIN ANALYST seat of a superintelligence trading council for a ${venue}.
-Your lens: funding rates, spot-vs-perp flows, exchange reserve trends, 24h momentum vs market-cap rank. High positive funding = crowded longs (bearish tilt); deeply negative = capitulation (contrarian bullish).\n${NO_GUESS}\n\nCANDIDATES:\n${data}\n\n${SCHEMA_HINT}`;
+Your lens: funding rates, spot-vs-perp flows, exchange reserve trends, 24h momentum vs market-cap rank. High positive funding = crowded longs (bearish tilt); deeply negative = capitulation (contrarian bullish).\n${NO_GUESS}\n\nCANDIDATES:\n${cand}\n\n${SCHEMA_HINT}`;
     case 'risk':
       return `You are the RISK GUARDIAN seat of a superintelligence trading council for a ${venue}. You hold VETO power.
 Your lens: scheduled events (blackout windows), global risk heat, drawdown/exposure state, plan riskiness (stop distance, R:R floor). You are NOT a direction caller — vote NEUTRAL with high confidence when risk is normal, and set "veto" ONLY for: event blackout ("event_blackout"), risk-off regime ("heat_cap"|"risk_off"), or an unusable plan ("bad_plan").\n${NO_GUESS}\n\nCANDIDATES:\n${data}\n\nRespond STRICT JSON only: {"verdicts":{"SYMBOL":{"direction":"NEUTRAL","confidence":0-100,"reasons":["max 2"],"veto":"event_blackout"|"heat_cap"|"risk_off"|"bad_plan"|null}}}`;
@@ -220,7 +245,11 @@ export function parseVerdict(role, raw) {
     entry: fin(raw.levels.entry), stop: fin(raw.levels.stop ?? raw.levels.stopLoss), t1: fin(raw.levels.t1 ?? raw.levels.target1),
   } : null;
   const veto = role === 'risk' && VETO_SET.has(String(raw.veto)) ? String(raw.veto) : null;
-  return { agent: role, direction, confidence, reasons, levels, veto };
+  // v21.36.0: the LLM may echo the strategy-consensus fit back. Only the
+  // three known values survive validation; anything else is null.
+  const fitRaw = String(raw.strategyFit || '').toUpperCase();
+  const strategyFit = ['CONFIRM', 'CONFLICT', 'NEUTRAL'].includes(fitRaw) ? fitRaw : null;
+  return { agent: role, direction, confidence, reasons, levels, veto, strategyFit };
 }
 
 // ---------------- deterministic fallback (quant-only) ----------------
