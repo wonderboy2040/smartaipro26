@@ -1,16 +1,20 @@
 // ============================================================
 // src/components/AiModeSwitch.tsx — FreeLLMAPI intelligence profile
 // ------------------------------------------------------------
-// One site-wide routing profile, controlled from the header:
-//   SMART    → auto:smart    — deepest council / validator answers
-//   BALANCED → auto:balanced — quality/latency blend for desk agents
-//   FAST     → auto:fast     — quick scans / MTF guard seats
+// One site-wide routing profile, controlled from the header.
+// v21.36.5 ROUTE STRATEGY (server/ai/routeStrategy.js) decides the
+// CONCRETE route per use-case on top of this profile:
+//   SITE LOAD          → auto:balanced (fastest router proof)
+//   MTF warm guard     → auto:balanced (fastest strict-JSON route;
+//                        auto:fast is prose-prone — the v21.36.2 miss)
+//   signal verify      → profile baseline (smart/balanced/fast),
+//                        escalated to auto:smart for deep / multi-symbol
+//   FINAL SNIPER ENTRY → auto:smart (the money moment)
+//   DEEP ENSEMBLE      → auto:smart (depth beats latency)
 // Every lane rides the local FreeLLMAPI router, which owns the
 // upstream provider keys and free-tier quotas. The server persists
 // the choice (server/data/ai-mode.json) and re-reads it on every AI
-// call, so switching needs NO restart and survives one. Scope: AI
-// Council, deep analysis, global council, borderline validator, desk
-// agents and the MTF AI guard.
+// call, so switching needs NO restart and survives one.
 // ============================================================
 import { memo, useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../utils/api';
@@ -41,7 +45,7 @@ function modeTitle(mode: AiMode | null): string {
     return 'BALANCED — FreeLLMAPI auto:balanced. Quality/latency blend for desk agents and board scans; deep analysis still uses auto:smart.';
   }
   if (mode === 'fast') {
-    return 'FAST — FreeLLMAPI auto:fast. Quickest eligible model for scans and the MTF AI guard; deep analysis still uses auto:smart.';
+    return 'FAST — FreeLLMAPI auto:fast scan profile. Fast scans use auto:fast; deep analysis, multi-symbol council reads and the sniper entry still use auto:smart (route strategy v21.36.5). The MTF warm guard rides auto:balanced (fastest strict-JSON route).';
   }
   return 'FreeLLMAPI intelligence profile — loading…';
 }

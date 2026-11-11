@@ -494,8 +494,14 @@ export async function runCouncilBoard({ market, signals, regime, deps }) {
   const verdictsBySymbol = {}; // sym → {role: verdict}
   let model = 'deterministic';
   if (llmOnline) {
+    // v21.36.5 ROUTE STRATEGY: a persona prompt covering MULTIPLE
+    // symbols is a board-wide read — the route table escalates it
+    // to the smartest seat (one smart model must read the whole
+    // board, not truncated prose). Single-symbol batches stay on
+    // the profile baseline (routeStrategy trade-signal lane).
+    const multiSymbol = featuresList.length > 1;
     const answers = await Promise.all(roles.map(async (role) => {
-      const { json, model: m } = await councilAsk(personaPrompt(role, mkt, featuresList), deps);
+      const { json, model: m } = await councilAsk(personaPrompt(role, mkt, featuresList), deps, multiSymbol ? { multiSymbol: true } : undefined);
       return { role, json, model: m };
     }));
     const parsed = answers.filter(a => a.json?.verdicts && typeof a.json.verdicts === 'object');

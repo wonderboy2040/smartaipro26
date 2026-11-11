@@ -27,6 +27,7 @@ import {
   FREELLMAPI_MODELS,
 } from './freellmapi.js';
 import { getAiMode } from './aiMode.js';
+import { guardSeatModel } from './routeStrategy.js';
 
 /** All engines the sentinel tracks (order = UI preference). */
 export const SENTINEL_PROVIDERS = ['freellmapi', 'gemini', 'groq', 'cerebras', 'openrouter', 'huggingface', 'nvidia'];
@@ -159,7 +160,12 @@ function _warmPerWindow() {
   return Math.max(1, Number(process.env.FREELLMAPI_MTF_WARM_PER_WINDOW) || 6);
 }
 
-/** The three FreeLLMAPI guard seats (same three roles as before). */
+/** The three FreeLLMAPI guard seats (same three display routes as before —
+ *  the UI + tests key off these seat labels). v21.36.5 ROUTE STRATEGY: the
+ *  WARM fire-and-forget call no longer hardcodes auto:fast; it rides
+ *  `warmModel` = the routeStrategy pick for the mtf-ai-guard lane
+ *  (balanced — the fastest route that reliably answers strict JSON;
+ *  auto:fast is prose-prone on a JSON lane, the v21.36.2 lesson). */
 export function getAiGuardModels() {
   const st = freeLlmStatus();
   return {
@@ -170,6 +176,7 @@ export function getAiGuardModels() {
     deepModel: FREELLMAPI_MODELS.smart,
     sentinelModel: FREELLMAPI_MODELS.balanced,
     models: [FREELLMAPI_MODELS.fast, FREELLMAPI_MODELS.smart, FREELLMAPI_MODELS.balanced],
+    warmModel: guardSeatModel(),   // v21.36.5: the actual warm-call route
     count: 3,
     profile: getAiMode(),
   };
@@ -262,7 +269,9 @@ export function evaluateMtfRowWithAiGuard(rowCtx = {}) {
   const scoreBoost = approvedCount === 3 ? 4 : approvedCount === 2 ? 2 : 0;
   const hasLiveResponse = Boolean(cached?.liveNote && engine === 'freellmapi');
   const ruleBasedGuard = !hasLiveResponse;
-  const modelLabel = FREELLMAPI_MODELS.fast;
+  // v21.36.5 ROUTE STRATEGY: the label names the route the warm seat
+  // actually rode (reliable), not a hardcoded fast alias.
+  const modelLabel = guardSeatModel();
   const honestLabel = hasLiveResponse
     ? `Live FreeLLMAPI (${modelLabel}): ${cached?.liveVerdict || verdict}`
     : `Rule-Based Guard ${approvedCount}/3`;
@@ -303,7 +312,7 @@ function _warmGuardSeat(key, ctx) {
     'Return STRICT JSON only: {"action":"CONFIRM|WAIT|REJECT","confidence":0-100,"note":"<=8 words"}',
   ].join(' ');
   freeLlmJson(prompt, {
-    model: FREELLMAPI_MODELS.fast,
+    model: guardSeatModel(), // v21.36.5: warm guard rides the reliable route
     temperature: 0.1,
     maxTokens: 80,
     timeoutMs: MTF_AI_TIMEOUT_MS,

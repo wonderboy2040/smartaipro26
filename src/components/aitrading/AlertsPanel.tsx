@@ -29,6 +29,17 @@ interface FreeLlmInfo {
   lastError?: string | null;
 }
 
+// v21.36.5 ROUTE STRATEGY — which FreeLLMAPI route serves which use-case
+// (the "smartest / fastest / balanced" table) + the live decisions view.
+interface RouteStrategyInfo {
+  ok?: boolean;
+  version?: string;
+  profile?: string;
+  defaultModel?: string;
+  routes?: Record<string, string>;
+  table?: Array<{ id: string; useCase: string; desc: string; route: string; defaultRoute?: string; model: string; why: string }>;
+}
+
 const MODE_SOURCE_LABEL: Record<string, string> = {
   runtime: 'runtime switch',
   file: 'saved file',
@@ -57,6 +68,8 @@ export const AlertsPanel = memo(function AlertsPanel({ fetchAlertsStatus, saveAl
   const [status, setStatus] = useState<AlertsStatus | null>(null);
   const [aiMode, setAiMode] = useState<AiModeInfo | null>(null);
   const [freeLlm, setFreeLlm] = useState<FreeLlmInfo | null>(null);
+  // v21.36.5: the route-strategy table (which FreeLLMAPI route per use-case)
+  const [routes, setRoutes] = useState<RouteStrategyInfo | null>(null);
   const [tgToken, setTgToken] = useState('');
   const [tgChat, setTgChat] = useState('');
   const [geminiKey, setGeminiKey] = useState('');
@@ -68,10 +81,16 @@ export const AlertsPanel = memo(function AlertsPanel({ fetchAlertsStatus, saveAl
     setStatus(s);
     // Honest FreeLLMAPI intelligence profile + router status (no secrets).
     try {
-      const [mRes, eRes] = await Promise.all([
+      const [mRes, eRes, rRes] = await Promise.all([
         apiFetch('/api/ai/mode', { signal: AbortSignal.timeout(8000) }),
         apiFetch('/api/ai/engines', { signal: AbortSignal.timeout(8000) }),
+        // v21.36.5 ROUTE STRATEGY — pure, fast, no I/O on the server.
+        apiFetch('/api/ai/route-strategy', { signal: AbortSignal.timeout(8000) }),
       ]);
+      if (rRes.ok) {
+        const r = await rRes.json().catch(() => null);
+        setRoutes(r && Array.isArray(r.table) ? r : null);
+      }
       if (mRes.ok) {
         const m = await mRes.json().catch(() => null);
         setAiMode(m && (m.mode === 'smart' || m.mode === 'balanced' || m.mode === 'fast') ? m : null);
@@ -237,8 +256,44 @@ export const AlertsPanel = memo(function AlertsPanel({ fetchAlertsStatus, saveAl
           )}
         </div>
         <div className="text-[9px] text-slate-600 leading-relaxed mt-1">
-          SMART = FreeLLMAPI auto:smart (deepest council / validator / desk-agent answers) · BALANCED = auto:balanced (quality/latency blend for scans) · FAST = auto:fast (quick scans / MTF guard). Deep analysis hamesha auto:smart par jati hai. FreeLLMAPI local router upstream provider keys/quota khud manage karta hai. Header ke SMART/BALANCED/FAST switch se turant apply hota hai — restart ki zaroorat nahi.
+          SMART = FreeLLMAPI auto:smart (deepest council / validator / desk-agent answers) · BALANCED = auto:balanced (quality/latency blend for scans) · FAST = auto:fast (quick scans). Deep analysis hamesha auto:smart par jati hai. FreeLLMAPI local router upstream provider keys/quota khud manage karta hai. Header ke SMART/BALANCED/FAST switch se turant apply hota hai — restart ki zaroorat nahi.
         </div>
+        {/* v21.36.5 ROUTE STRATEGY — which FreeLLMAPI route serves which
+            use-case (the "smartest / fastest / balanced" table), live from
+            /api/ai/route-strategy. No black-box lanes: each row shows the
+            use-case + the route it rides + why. */}
+        {routes && routes.table && routes.table.length > 0 && (
+          <div className="mt-2">
+            <div className="text-[9px] font-black text-cyan-300/80 tracking-wider mb-1">
+              🧭 ROUTE STRATEGY — {routes.version} · profile {String(routes.profile || '?').toUpperCase()} · default {routes.defaultModel || '?'}
+            </div>
+            <div className="grid gap-1">
+              {routes.table.map(t => {
+                const smart = t.route === 'smartest';
+                return (
+                  <div key={t.id}
+                    title={`${t.desc}\n${t.why}`}
+                    className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border ${smart ? 'bg-emerald-500/8 border-emerald-500/20' : 'bg-black/20 border-white/5'}`}>
+                    <span className="text-[8px] font-black text-slate-400 w-[128px] shrink-0 truncate">{t.useCase}</span>
+                    <span className={`text-[9px] font-black font-mono px-1.5 py-0.5 rounded border ${smart
+                      ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                      : t.route === 'balanced'
+                        ? 'bg-cyan-500/15 text-cyan-300 border-cyan-500/30'
+                        : t.route === 'fastest'
+                          ? 'bg-violet-500/15 text-violet-300 border-violet-500/30'
+                          : 'bg-amber-500/15 text-amber-300 border-amber-500/30'}`}>
+                      {t.model}
+                    </span>
+                    <span className="text-[8px] text-slate-500 truncate flex-1">{t.why}</span>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="text-[8px] text-slate-600 mt-1">
+              Deep ensemble + final sniper entry = smartest seat · site-load + warm guard = balanced · env pins (FREELLMAPI_DEEP_MODEL / FREELLMAPI_FAST_MODEL) table ko override karte hain.
+            </div>
+          </div>
+        )}
         {!routerReady && freeLlm && (
           <div className="text-[9px] text-amber-400/80 font-mono mt-1">
             FreeLLMAPI router reachable nahi ({freeLlm.lastError || 'desktop app band hai'}) — AI lanes deterministic rahenge. Start karo: FreeLLMAPI desktop app (default 127.0.0.1:31415) aur RECHECK dabao.

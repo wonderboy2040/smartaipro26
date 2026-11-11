@@ -200,6 +200,8 @@ import { correlationMatrix, pairCorrelation } from './correlation.js';
 import { eventGuardStatus } from './eventGuard.js';
 // v11.0 GLOBAL MARKET COUNCIL — status/deep-verdict/near-miss routes.
 import { councilStatus, runCouncilDeep, councilStampOf } from './council.js';
+// v21.36.5 ROUTE STRATEGY — which FreeLLMAPI route serves which use-case.
+import { routeStrategyStatus, getDecisionRoute } from './routeStrategy.js';
 // ENGINE SENTINEL — router health view + manual recheck.
 import {
   engineSnapshot, engineClearCooldowns,
@@ -3602,6 +3604,32 @@ export function registerAITradingRoutes(app, deps) {
       res.json({ ok: true, entries: nearMissList(limit), stats: nearMissStats() });
     } catch (e) {
       jsonError(res, 500, 'council near-miss failed', e);
+    }
+  });
+
+  // v21.36.5 ROUTE STRATEGY + DECISIONS ROUTING — which FreeLLMAPI route
+  // serves which use-case (the "smartest/fastest/balanced" table), plus
+  // (with ?symbol=&score=&side=&deep=) the DECISIONS ROUTING view: which
+  // route that specific symbol's trade/entry decision rides RIGHT NOW.
+  // Pure — no I/O; the caller passes the live superScore so the route
+  // resolves to the lane's real pick (high-conviction entry = smartest).
+  app.get('/api/ai/route-strategy', (req, res) => {
+    try {
+      const st = routeStrategyStatus();
+      const out = { ...st, decisions: [] };
+      const sym = String(req.query.symbol || '').toUpperCase().trim();
+      if (sym) {
+        const score = req.query.score != null ? Number(req.query.score) : null;
+        const side = req.query.side ? String(req.query.side).toUpperCase() : null;
+        const deep = req.query.deep === '1' || req.query.deep === 'true';
+        out.decisions.push({
+          ...getDecisionRoute({ symbol: sym, side, score, deep }),
+          note: 'Pass ?score=<superScore> for a score-aware route (≥85 or deep → smartest).',
+        });
+      }
+      res.json(out);
+    } catch (e) {
+      jsonError(res, 500, 'route-strategy failed', e);
     }
   });
 

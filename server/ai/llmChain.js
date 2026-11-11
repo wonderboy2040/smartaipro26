@@ -29,6 +29,7 @@ import {
   FREELLMAPI_MODELS,
 } from './freellmapi.js';
 import { getAiMode, AI_PROFILE_MODELS } from './aiMode.js';
+import { resolveRouteModel } from './routeStrategy.js';
 
 export { tryParseJson };
 export { stripThinking };
@@ -50,15 +51,32 @@ function _timeoutMs(deep, explicit) {
   return deep ? DEEP_TIMEOUT_MS : SCAN_TIMEOUT_MS;
 }
 
-function _profileModel(deep) {
-  // Deep analysis always asks for the smartest eligible model: a FAST
-  // profile is a scan-latency preference, not a reason to weaken the
-  // single-symbol deep verdict. Explicit pins (documented in .env.example)
-  // win over the virtual aliases — useful for pinning a known-good model.
-  if (deep) return String(process.env.FREELLMAPI_DEEP_MODEL || '').trim() || AI_PROFILE_MODELS.smart;
+function _profileModel(deep, opts = {}) {
+  // v21.36.5 ROUTE STRATEGY: the model is no longer a flat profile alias —
+  // it's the route-strategy table's pick for this LANE. Baseline = the
+  // user's header profile (smart/balanced/fast, the legacy contract the
+  // chain-env tests lock); the table then escalates where context demands
+  // the smartest seat (deep verdicts, multi-symbol board reads, high-conviction
+  // debates). Explicit env pins STILL win over the table for their own lane
+  // (DEEP_MODEL pins the deep lane; FAST_MODEL pins only the fast-profile
+  // lane — exactly the legacy semantics, now lane-scoped).
   const mode = getAiMode();
-  if (mode === 'fast') return String(process.env.FREELLMAPI_FAST_MODEL || '').trim() || AI_PROFILE_MODELS.fast;
-  return AI_PROFILE_MODELS[mode] || AI_PROFILE_MODELS.smart;
+  const ctx = {
+    deep: !!deep,
+    multiSymbol: !!opts.multiSymbol,
+    debate: !!opts.debate,
+    score: opts.score != null ? Number(opts.score) : null,
+  };
+  if (deep) {
+    const pin = String(process.env.FREELLMAPI_DEEP_MODEL || '').trim();
+    if (pin) return pin;
+    return resolveRouteModel('deep-ensemble', ctx).model;
+  }
+  if (mode === 'fast') {
+    const pin = String(process.env.FREELLMAPI_FAST_MODEL || '').trim();
+    if (pin) return pin;
+  }
+  return resolveRouteModel('trade-signal', ctx).model;
 }
 
 function _modelLabel(out, fallbackModel) {
@@ -97,7 +115,11 @@ export async function councilAsk(prompt, _deps = null, opts = {}) {
   // Honest gate: never call the JSON helper when the router is down. The
   // direct provider keys are NOT a fallback for the council lane.
   if (!(await freeLlmProbe().catch(() => false))) return { json: null, model: null };
-  const model = opts.model || _profileModel(deep);
+  // v21.36.5 ROUTE STRATEGY: the route pick is lane-aware — callers can
+  // tag the ask with the context that escalates it (multiSymbol board
+  // reads / debate calls / a candidate's superScore). opts.model and env
+  // pins always beat the table.
+  const model = opts.model || _profileModel(deep, opts);
   const budget = _timeoutMs(deep, opts.timeoutMs);
   let out;
   try {
