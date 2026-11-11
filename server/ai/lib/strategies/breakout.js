@@ -8,7 +8,7 @@
 //   5. Session range breakout (UTC 00:00–02:00 box)
 // ============================================================
 import {
-  atr, bollinger, bollingerWidthPercentile, donchian, keltner,
+  atr, bollinger, bollingerWidthPercentile, donchian,
 } from '../indicators.js';
 import {
   closeArr, rrLevels, sessionRange, swingHigh, swingLow, vote,
@@ -49,34 +49,43 @@ function bollingerSqueeze202(candles) {
   let strength = 0;
   if (dir !== 0 && wasSqueezed) strength = expanding ? 0.8 : 0.62;
   else if (dir !== 0) strength = 0.42;
+  // v21.36.4 UPGRADE — VOLUME-CONFIRMED BREAK: a band break without real
+  // volume is a head-fake (the classic fake-out). Require the break bar's
+  // volume ≥ the 20-bar average to keep the full post-squeeze strength;
+  // a break on THIN volume is demoted (still votes, honest — but it
+  // can't carry the consensus the way a volume-confirmed breakout should).
+  let volNote = null;
+  if (dir !== 0) {
+    const vols = candles.map(c => c.volume || 0);
+    const lastVol = vols[vols.length - 1];
+    const avgVol20 = vols.slice(-21, -1).reduce((x, y) => x + y, 0) / Math.max(1, vols.slice(-21, -1).length);
+    const volRatio = avgVol20 > 0 ? lastVol / avgVol20 : null;
+    if (wasSqueezed && volRatio != null && volRatio < 0.9) {
+      strength = Math.min(strength, 0.5);
+      volNote = `break on thin volume (${volRatio.toFixed(2)}× avg) — demoted (fake-out risk)`;
+    } else if (volRatio != null && volRatio >= 1.2 && wasSqueezed) {
+      strength = Math.min(1, strength + 0.05);
+      volNote = `volume-confirmed break (${volRatio.toFixed(2)}× avg)`;
+    }
+  }
   return vote({
     id: 'bollinger_squeeze_20_2', name: 'Bollinger Squeeze 20/2', family: 'breakout',
     dir: strength > 0 ? dir : 0,
     strength,
     reasons: [dir === 0
       ? (wasSqueezed ? `Squeeze active (width percentile ${pctNow}) — coiling, no break` : 'Bands normal — no squeeze setup')
-      : `${wasSqueezed ? 'Post-squeeze ' : ''}${dir === 1 ? 'upper' : 'lower'} band break (width pct ${pctNow})`],
+      : `${wasSqueezed ? 'Post-squeeze ' : ''}${dir === 1 ? 'upper' : 'lower'} band break (width pct ${pctNow})`, volNote].filter(Boolean),
     levels: dir !== 0 ? rrLevels({ dir, entry: close, stop: dir === 1 ? bb.mid : bb.mid }) : null,
     meta: { widthPct: bb.widthPct, pctNow, pct12, squeeze: wasSqueezed, percentB: bb.percentB },
   });
 }
 
-function keltnerBreak(candles) {
-  const kc = keltner(candles, { period: 20, mult: 2, atrPeriod: 10 });
-  if (!kc) return null;
-  const close = candles[candles.length - 1].close;
-  const dir = close > kc.upper ? 1 : close < kc.lower ? -1 : 0;
-  return vote({
-    id: 'keltner_ema20_atr10_2', name: 'Keltner Break EMA20/ATR10×2', family: 'breakout',
-    dir,
-    strength: dir === 0 ? 0 : 0.6,
-    reasons: [dir === 0
-      ? `Inside Keltner channel (${kc.lower.toFixed(4)}–${kc.upper.toFixed(4)})`
-      : `Close ${dir === 1 ? 'above upper' : 'below lower'} Keltner band`],
-    levels: dir !== 0 ? rrLevels({ dir, entry: close, stop: kc.mid }) : null,
-    meta: { upper: kc.upper, mid: kc.mid, lower: kc.lower, position: kc.position },
-  });
-}
+// v21.36.4 DEDUP — the standalone Keltner EMA20/ATR10×2 vote was REMOVED:
+// it is the same channel-break detector as the Bollinger band-break above
+// (EMA20±2×ATR vs SMA20±2×σ — near-identical bands on the same 20-bar
+// lookback). Two "channel break" votes just double-counted the same
+// signal as a headcount. The Bollinger Squeeze strategy keeps the volume
+// confirmation that a Keltner break would have also wanted.
 
 function atrBreakout1415(candles) {
   const a = atr(candles, 14);
@@ -127,7 +136,8 @@ function sessionRangeBreak(candles) {
 export const BREAKOUT_STRATEGIES = [
   { id: 'channel_breakout_20_10', name: 'Channel Breakout 20/10', family: 'breakout', fn: channelBreakout2010 },
   { id: 'bollinger_squeeze_20_2', name: 'Bollinger Squeeze 20/2', family: 'breakout', fn: bollingerSqueeze202 },
-  { id: 'keltner_ema20_atr10_2', name: 'Keltner Break EMA20/ATR10×2', family: 'breakout', fn: keltnerBreak },
+  // v21.36.4: keltner_ema20_atr10_2 REMOVED (duplicate channel-break detector
+  // — see the DEDUP note above; Bollinger Squeeze now carries volume confirm).
   { id: 'atr_breakout_14_1_5', name: 'ATR Breakout 14×1.5', family: 'breakout', fn: atrBreakout1415 },
   { id: 'session_range_utc_0_2h', name: 'Session Range Break (UTC 0–2h)', family: 'breakout', fn: sessionRangeBreak },
 ];

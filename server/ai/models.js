@@ -917,12 +917,12 @@ export const MODELS = [
   { id: 'regime', name: 'MacroRegime', role: 'NIFTY/VIX gate (India) · BTC gate (crypto)', weight: 0.8, fn: macroRegime },
   { id: 'smc', name: 'SmartMoneyICT', role: 'Liquidity sweeps + order blocks + FVG + BOS/CHoCH + EQH/EQL + premium/discount (SMC v2)', weight: 1.1, fn: smartMoneyICT },
   { id: 'structure', name: 'StructurePro', role: 'Fib golden pocket + Volume-Profile POC + Supply/Demand zones + EMA100/200 (BOS/CHoCH v21.0 me SMC ko diya — duplicate fix)', weight: 1.0, fn: structurePro },
-  // v21.36.0 CLASSIC 29 (grouped): the full 29-strategy playbook engine
+  // v21.36.0 CLASSIC (grouped): the full 25-strategy playbook engine (v21.36.4 dedup from 29)
   // votes as ONE seat (regime-weighted family consensus). Deliberately a
   // single seat — 29 raw votes would swamp quorum/agreement and double-
   // count TrendMatrix/MomentumQuant/SMC. Structurally abstains (`na`)
   // when candles are absent, so it never dilutes pass-1 quorum.
-  { id: 'classic', name: 'Classic29', role: '29 classic strategies — trend/breakout/momentum/mean-reversion/ICT regime-weighted consensus', weight: 1.0, fn: classicStrategyVote },
+  { id: 'classic', name: 'Classic25', role: '25 classic strategies — trend/breakout/momentum/mean-reversion/ICT regime-weighted consensus', weight: 1.0, fn: classicStrategyVote },
   // v21.7.0 (Issue-2): the MA-CROSSOVER EVENT seat — dono tabs (India
   // 15m revival / crypto 1h candles). TrendMatrix reads STACK STATE;
   // ye seat SMTAHI 20/50 + 10/20 cross events vote karti hai. core

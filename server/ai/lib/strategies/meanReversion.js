@@ -59,27 +59,13 @@ function bollingerReversion202(candles) {
   });
 }
 
-function zScore5020(candles) {
-  const closes = closeArr(candles);
-  const zs = priceZScore(closes, 50);
-  if (!zs) return null;
-  const { z } = zs;
-  const dir = z <= -2 ? 1 : z >= 2 ? -1 : 0;
-  const close = closes[closes.length - 1];
-  const exitZone = Math.abs(z) <= 0.25;
-  return vote({
-    id: 'zscore_50_2_0', name: 'Z-Score 50 (2σ → 0)', family: 'meanReversion',
-    dir,
-    strength: dir === 0 ? 0 : 0.6 + Math.min(0.25, (Math.abs(z) - 2) * 0.15),
-    reasons: [dir !== 0
-      ? `Price ${z.toFixed(2)}σ from 50-bar mean — fade toward 0`
-      : exitZone
-        ? `Z ${z.toFixed(2)} at mean (exit zone)`
-        : `Z ${z.toFixed(2)} inside ±2 — no extreme`],
-    levels: dir !== 0 ? rrLevels({ dir, entry: close, stop: dir === 1 ? Math.min(...closes.slice(-8)) : Math.max(...closes.slice(-8)) }) : null,
-    meta: { z, mean: zs.mean, sd: zs.sd },
-  });
-}
+// v21.36.4 DEDUP — the standalone Z-Score 50 (2σ → 0) vote was REMOVED:
+// it faded a 2σ extreme by PRICE POSITION ALONE, with no turn bar — a
+// knife-catch double-count of the VWAP/BB reversion family (both of which
+// REQUIRE a confirming close before voting). A position-only fade is
+// exactly the "against-signal" entry that reverses on the way through,
+// so dropping it is a quality gain, not a loss. The 50-bar 2σ extreme
+// read now feeds the VWAP Reversion vote as context (see its meta).
 
 function vwapReversion482(candles) {
   const bands = rollingVwapBands(candles, { period: 48, mult: 2 });
@@ -90,15 +76,31 @@ function vwapReversion482(candles) {
   const long = (close <= bands.lower && close > c.open) || (bands.z <= -2 && close > prevClose);
   const short = (close >= bands.upper && close < c.open) || (bands.z >= 2 && close < prevClose);
   const dir = long && !short ? 1 : short && !long ? -1 : 0;
+  let strength = dir === 0 ? 0 : 0.65;
+  // v21.36.4 UPGRADE — now carries the removed Z-Score vote's job: a
+  // 50-bar 2σ+ extreme CONFIRMING the same fade is independent
+  // statistical evidence (two different mean definitions agree on the
+  // deviation) → bounded bonus. Quality kept, knife-catch removed: the
+  // VWAP band-turn requirement still gates the vote (see the DEDUP note
+  // above this function).
+  let zNote = null;
+  if (dir !== 0) {
+    const closes = closeArr(candles);
+    const zs = priceZScore(closes, 50);
+    if (zs && Math.abs(zs.z) >= 2 && Math.sign(zs.z) === -dir) {
+      strength = Math.min(1, strength + 0.1);
+      zNote = `50-bar z ${zs.z.toFixed(1)} confirms the extreme`;
+    }
+  }
   return vote({
     id: 'vwap_reversion_48_2', name: 'VWAP Reversion 48 (2σ)', family: 'meanReversion',
     dir,
-    strength: dir === 0 ? 0 : 0.65,
+    strength,
     reasons: [dir === 1
       ? `Price at/below −2σ VWAP band (${bands.lower.toFixed(4)}) and turning up`
       : dir === -1
         ? `Price at/above +2σ VWAP band (${bands.upper.toFixed(4)}) and turning down`
-        : `VWAP z ${bands.z.toFixed(2)} — no band extreme`],
+        : `VWAP z ${bands.z.toFixed(2)} — no band extreme`, zNote].filter(Boolean),
     levels: dir !== 0 ? rrLevels({ dir, entry: close, stop: dir === 1 ? Math.min(c.low, bands.lower) : Math.max(c.high, bands.upper) }) : null,
     meta: { vwap: bands.vwap, upper: bands.upper, lower: bands.lower, z: bands.z },
   });
@@ -107,6 +109,8 @@ function vwapReversion482(candles) {
 export const MEAN_REVERSION_STRATEGIES = [
   { id: 'rsi_reversal_14_30_70', name: 'RSI Reversal 14 (30/70)', family: 'meanReversion', fn: rsiReversal143070 },
   { id: 'bollinger_reversion_20_2', name: 'Bollinger Reversion 20/2', family: 'meanReversion', fn: bollingerReversion202 },
-  { id: 'zscore_50_2_0', name: 'Z-Score 50 (2σ → 0)', family: 'meanReversion', fn: zScore5020 },
+  // v21.36.4: zscore_50_2_0 REMOVED (knife-catch double-count of the
+  // VWAP/BB reversion family — its 50-bar 2σ read now feeds the VWAP
+  // Reversion vote as a confirmation bonus, see the upgrade note there).
   { id: 'vwap_reversion_48_2', name: 'VWAP Reversion 48 (2σ)', family: 'meanReversion', fn: vwapReversion482 },
 ];

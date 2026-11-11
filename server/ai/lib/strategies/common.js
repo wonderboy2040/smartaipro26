@@ -1,6 +1,6 @@
 // ============================================================
 // server/ai/lib/strategies/common.js — shared pure helpers for the
-// 29-strategy classic engine.
+// 25-strategy classic engine (v21.36.4 dedup from 29).
 // ------------------------------------------------------------
 // Contract: every evaluator receives oldest-first candles and returns
 // either `null` (insufficient data — honest abstain, never a fake 0)

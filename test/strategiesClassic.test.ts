@@ -1,6 +1,7 @@
 // ============================================================
 // test/strategiesClassic.test.ts — v21.36.0
-// 29-strategy engine + new indicator primitives + integration guards.
+// 25-strategy engine (v21.36.4 dedup from 29) + indicator primitives + integration guards.
+// Also locks the v21.36.4 DEDUP (4 duplicate votes removed) and the top-strategy upgrades.
 // ============================================================
 import { describe, it, expect } from 'vitest';
 import {
@@ -59,19 +60,40 @@ function pullbackTape(n = 90): Candle[] {
   return out;
 }
 
-describe('29-strategy registry', () => {
-  it('registers 29 unique strategies with the 8/5/7/4/5 family split', () => {
-    expect(STRATEGY_COUNT).toBe(29);
-    expect(STRATEGY_REGISTRY).toHaveLength(29);
+describe('25-strategy registry (v21.36.4 dedup)', () => {
+  it('registers 25 unique strategies with the 7/4/6/3/5 family split', () => {
+    expect(STRATEGY_COUNT).toBe(25);
+    expect(STRATEGY_REGISTRY).toHaveLength(25);
     const ids = STRATEGY_REGISTRY.map(s => s.id);
-    expect(new Set(ids).size).toBe(29);
+    expect(new Set(ids).size).toBe(25);
     const byFamily = (fam: string) => STRATEGY_REGISTRY.filter(s => s.family === fam).length;
-    expect(byFamily('trend')).toBe(8);
-    expect(byFamily('breakout')).toBe(5);
-    expect(byFamily('momentum')).toBe(7);
-    expect(byFamily('meanReversion')).toBe(4);
+    expect(byFamily('trend')).toBe(7);
+    expect(byFamily('breakout')).toBe(4);
+    expect(byFamily('momentum')).toBe(6);
+    expect(byFamily('meanReversion')).toBe(3);
     expect(byFamily('smartMoney')).toBe(5);
   });
+
+  it('v21.36.4 DEDUP: the 4 removed duplicates are gone, upgrades live in the keepers', () => {
+    const ids = new Set(STRATEGY_REGISTRY.map(s => s.id));
+    expect(ids.has('triple_ema_8_21_55')).toBe(false); // subset of the EMA9/21 stack vote
+    expect(ids.has('keltner_ema20_atr10_2')).toBe(false); // same channel-break detector as BB break
+    expect(ids.has('williams_r_14')).toBe(false); // same 14-bar range oscillator as Stochastic
+    expect(ids.has('zscore_50_2_0')).toBe(false); // position-only knife-catch fade
+    expect(ids.has('ema_cross_9_21')).toBe(true);
+    expect(ids.has('bollinger_squeeze_20_2')).toBe(true);
+    expect(ids.has('stochastic_14_3_3')).toBe(true);
+    expect(ids.has('vwap_reversion_48_2')).toBe(true);
+  });
+
+  it('v21.36.4 UPGRADE: ADX late-wave decay demotes a fading stale trend (still an honest LONG vote)', () => {
+    const c = evaluateStrategies(up, { side: 'LONG' });
+    const adxVote = c.votes.find(v => v.id === 'adx_trend_20_50');
+    expect(adxVote).toBeDefined();
+    expect(adxVote!.dir).toBe(1);
+    expect(adxVote!.strength).toBeLessThanOrEqual(0.95);
+  });
+
 });
 
 describe('strategy consensus', () => {
@@ -85,7 +107,7 @@ describe('strategy consensus', () => {
   it('uptrend → LONG consensus with trend-family alignment', () => {
     const c = evaluateStrategies(up, { side: 'LONG' });
     expect(c.ok).toBe(true);
-    expect(c.readyCount).toBe(29);
+    expect(c.readyCount).toBe(25);
     expect(c.side).toBe('LONG');
     expect(c.confidence).toBeGreaterThanOrEqual(55);
     expect(c.votesFor).toBeGreaterThan(c.votesAgainst);
@@ -120,7 +142,7 @@ describe('strategy consensus', () => {
     const c = evaluateStrategies(down, { side: 'LONG' });
     const row = compactStrategyConsensus(c);
     expect(row).not.toBeNull();
-    expect(row!.total).toBe(29);
+    expect(row!.total).toBe(25);
     expect(row!.side).toBe('SHORT');
     expect(Object.keys(row!.families)).toContain('trend');
     expect(Array.isArray(row!.top)).toBe(true);
@@ -141,7 +163,7 @@ describe('ensemble seat adapter', () => {
     expect(v.na).toBeUndefined();
     expect(v.dir).toBe(1);
     expect(v.conf).toBeGreaterThan(0);
-    expect(v.strategyConsensus.total).toBe(29);
+    expect(v.strategyConsensus.total).toBe(25);
   });
 
   it('sub-45% consensus structurally abstains instead of diluting the quorum', () => {
@@ -249,7 +271,7 @@ describe('LLM integration guards', () => {
       symbol: 'BTC', side: 'LONG', confidence: 70, ltp: 100,
       votes: [{ id: 'classic', name: 'Classic29', dir: 1, conf: 70, weight: 1, strategyConsensus: {
         side: 'LONG', confidence: 72, net: 0.6, agreement: 0.8, regime: 'trend',
-        votesFor: 12, votesAgainst: 3, ready: 29, fit: 'CONFIRM',
+        votesFor: 12, votesAgainst: 3, ready: 25, fit: 'CONFIRM',
         families: { trend: { net: 0.9 }, momentum: { net: 0.4 } },
         top: [{ id: 'ema_cross_9_21' }, { id: 'macd_12_26_9' }],
       } }],

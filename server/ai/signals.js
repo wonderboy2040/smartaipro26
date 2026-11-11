@@ -1028,9 +1028,9 @@ export function toCouncilCandidate(c) {
  */
 function compactCouncilCandidates(candidates) {
   return candidates.map(toCouncilCandidate).filter(c => c && c.symbol).map(c => {
-    // v21.36.0: the grouped Classic29 seat carries its consensus on the
+    // v21.36.0: the grouped Classic25 seat carries its consensus on the
     // vote itself. Pass a COMPACT strategy block — the council prompt
-    // must see the 29-strategy read, not 29 raw strategy lines.
+    // must see the 25-strategy read, not raw strategy lines.
     const stratVote = (c.votes || []).find(v => v && v.id === 'classic');
     const strat = stratVote?.strategyConsensus || null;
     const fam = {};
@@ -1099,7 +1099,7 @@ export async function aiCouncilDebate(candidates, deps, market, opts = {}) {
         ? 'global equity perpetual futures SIM desk (USDC-margined, 24/7)'
         : 'NSE India (options-led desk)';
   const data = JSON.stringify(compact);
-  // v21.36.0: the 29-strategy block is independent evidence, not an order.
+  // v21.36.0: the 25-strategy block is independent evidence, not an order.
   // A null strat must never be read as bearish/bullish evidence.
   const stratGuide = '\nEach candidate may carry a compact "strat" block — the independent 29-classic-strategy engine (trend/breakout/momentum/mean-reversion/ICT). side/conf/net/agree/regime + family nets (fam) + top/dissent ids. A high-conviction opposing strat (conf ≥ 60) must be rebutted with numbers; a null strat is NOT evidence either way.';
   // v2 SentimentPulse parity (the legacy single-shot path injects the

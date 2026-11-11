@@ -10,7 +10,7 @@
 //   7. MACD + RSI(14) combo (RSI < 70 long / > 30 short)
 // ============================================================
 import {
-  cci, ema, emaSeries, macd, rsi, stochastic, stochRsi, williamsR,
+  cci, ema, macd, rsi, stochastic, stochRsi,
 } from '../indicators.js';
 import {
   closeArr, crossUp, rrLevels, vote,
@@ -51,6 +51,16 @@ function stochastic1433(candles) {
   } else {
     note = `Stoch neutral K ${now.k.toFixed(1)} D ${now.d.toFixed(1)}`;
   }
+  // v21.36.4 UPGRADE — now owns the Williams %R job too (its duplicate
+  // vote was removed): a FRESH exit of the 14-bar high/low range is the
+  // strongest momentum read. Bonus when %K just crossed the band edge
+  // AND the cross is in the right direction (turn, not continuation).
+  const freshRangeExit = prev != null
+    && ((dir === 1 && prev.k <= 20 && now.k > 20) || (dir === -1 && prev.k >= 80 && now.k < 80));
+  if (freshRangeExit && cross !== 0) {
+    strength = Math.min(1, strength + 0.08);
+    note += ' (fresh range exit)';
+  }
   const close = candles[candles.length - 1].close;
   return vote({
     id: 'stochastic_14_3_3', name: 'Stochastic 14/3/3', family: 'momentum',
@@ -89,32 +99,11 @@ function stochRsi1433(candles) {
   });
 }
 
-function williamsR14(candles) {
-  const now = williamsR(candles, 14);
-  const prev = candles.length > 20 ? williamsR(candles.slice(0, -1), 14) : null;
-  if (now == null) return null;
-  const closes = closeArr(candles);
-  const ema100 = closes.length >= 100 ? emaSeries(closes, 100) : null;
-  const filter = ema100 ? (closes[closes.length - 1] > ema100[ema100.length - 1] ? 1 : -1) : null;
-  let dir = 0, strength = 0, note = `Williams %R ${now.toFixed(1)}`;
-  if (prev != null && prev <= -80 && now > -80 && (filter == null || filter === 1)) {
-    dir = 1; strength = 0.7; note = `Williams %R exited oversold (${prev.toFixed(1)} → ${now.toFixed(1)})${filter === 1 ? ' + EMA100' : ''}`;
-  } else if (prev != null && prev >= -20 && now < -20 && (filter == null || filter === -1)) {
-    dir = -1; strength = 0.7; note = `Williams %R exited overbought (${prev.toFixed(1)} → ${now.toFixed(1)})${filter === -1 ? ' + EMA100' : ''}`;
-  } else if (now <= -80) {
-    dir = 0; strength = 0; note = `Williams %R oversold ${now.toFixed(1)} — waiting for turn`;
-  } else if (now >= -20) {
-    dir = 0; strength = 0; note = `Williams %R overbought ${now.toFixed(1)} — waiting for turn`;
-  }
-  const close = closes[closes.length - 1];
-  return vote({
-    id: 'williams_r_14', name: 'Williams %R 14', family: 'momentum',
-    dir, strength,
-    reasons: [note],
-    levels: dir !== 0 ? rrLevels({ dir, entry: close, stop: dir === 1 ? Math.min(...candles.slice(-8).map(c => c.low)) : Math.max(...candles.slice(-8).map(c => c.high)) }) : null,
-    meta: { value: now, prev, filter },
-  });
-}
+// v21.36.4 DEDUP — the standalone Williams %R 14 vote was REMOVED: it is
+// the same 14-bar high/low oscillator family as Stochastic 14/3/3 (%R is
+// a rescaled, un-smoothed cousin of %K — both measure where close sits in
+// the recent 14-bar range). Two oscillators on the same range = the same
+// signal double-counted as a headcount. Stochastic keeps the job.
 
 function cci20(candles) {
   const now = cci(candles, 20);
@@ -188,7 +177,9 @@ export const MOMENTUM_STRATEGIES = [
   { id: 'macd_12_26_9', name: 'MACD 12/26/9', family: 'momentum', fn: macdStrategy },
   { id: 'stochastic_14_3_3', name: 'Stochastic 14/3/3', family: 'momentum', fn: stochastic1433 },
   { id: 'stoch_rsi_14_14_3_3', name: 'Stochastic RSI 14/14/3/3', family: 'momentum', fn: stochRsi1433 },
-  { id: 'williams_r_14', name: 'Williams %R 14', family: 'momentum', fn: williamsR14 },
+  // v21.36.4: williams_r_14 REMOVED (same 14-bar range oscillator as
+  // Stochastic — double-count; its fresh-range-exit read now folds into
+  // the Stochastic vote as a bonus, see stochastic1433 upgrade note).
   { id: 'cci_20', name: 'CCI 20 (±100)', family: 'momentum', fn: cci20 },
   { id: 'roc_24_ema6', name: 'ROC 24 + EMA6', family: 'momentum', fn: roc24Ema6 },
   { id: 'macd_rsi_combo', name: 'MACD + RSI 14 combo', family: 'momentum', fn: macdRsiCombo },

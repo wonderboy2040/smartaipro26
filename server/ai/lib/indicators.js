@@ -1436,7 +1436,7 @@ export function computeWorldTopIndicators(candles, targetSide = null) {
 }
 
 // ---------------- v21.36.0 CLASSIC-STRATEGY INDICATOR PACK ----------------
-// The 29-strategy engine (lib/strategies/*) needs primitives that were
+// The 25-strategy engine (lib/strategies/*) needs primitives that were
 // missing from the live layer: Parabolic SAR, Heikin-Ashi, Williams %R,
 // CCI, Donchian channel, price Z-score, Keltner channel, rolling VWAP
 // bands and a Bollinger-width percentile. All pure, oldest-first,

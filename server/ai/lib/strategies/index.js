@@ -1,15 +1,29 @@
 // ============================================================
-// server/ai/lib/strategies/index.js — the 29-strategy classic engine
+// server/ai/lib/strategies/index.js — the 25-strategy classic engine
 // ------------------------------------------------------------
 // THE IDEA: the site already had TrendMatrix/MomentumQuant/SMC seats,
 // but a single "trend model" hides WHICH classic setup is actually in
-// play. This engine evaluates all 29 playbook strategies independently
+// play. This engine evaluates all 25 playbook strategies independently
 // (pure functions, oldest-first candles), then aggregates them into ONE
 // regime-weighted consensus that MTF/ensemble/FreeLLMAPI can consume.
 //
-// Families (29 total):
-//   trend (8) · breakout (5) · momentum (7) · meanReversion (4) ·
+// Families (25 total — v21.36.4 dedup from 29):
+//   trend (7) · breakout (4) · momentum (6) · meanReversion (3) ·
 //   smartMoney/ICT (5)
+//
+// v21.36.4 DEDUP + UPGRADE (user: "duplicate strategy na ho; top
+// strategies upgrade karo"):
+//   • triple_ema_8_21_55 — REMOVED (pure subset of the EMA9/21 stack
+//     read; its EMA55 confirmation now a bonus INSIDE ema_cross_9_21)
+//   • keltner_ema20_atr10_2 — REMOVED (same channel-break detector as
+//     the Bollinger band-break; double headcount on one signal)
+//   • williams_r_14 — REMOVED (same 14-bar range oscillator family as
+//     Stochastic; its fresh-range-exit read folded into stochastic_14_3_3)
+//   • zscore_50_2_0 — REMOVED (position-only knife-catch fade; its 50-bar
+//     2σ read now a confirmation bonus inside vwap_reversion_48_2)
+//   Upgrades shipped with the dedup: EMA Cross ATR-separation chop gate,
+//   Supertrend weak-tape gate, ADX late-wave decay, BB-squeeze volume
+//   confirmation, Stochastic fresh-range-exit bonus, VWAP z-score bonus.
 //
 // Honesty rules:
 //   • insufficient data → evaluator returns null → excluded from the
@@ -80,7 +94,7 @@ export function classifyStrategyRegime(candles) {
 }
 
 /**
- * Evaluate all 29 strategies and build the regime-weighted consensus.
+ * Evaluate all 25 strategies and build the regime-weighted consensus.
  *
  * @param {Array} candlesIn oldest-first OHLCV candles
  * @param {object} [opts]
@@ -267,7 +281,7 @@ export function compactStrategyConsensus(consensus) {
 export function classicStrategyVote(ctx) {
   const candles = Array.isArray(ctx) ? ctx : ctx?.candles;
   if (!Array.isArray(candles) || candles.length < 40) {
-    return { dir: 0, conf: 0, na: true, reasons: ['29-strategy engine: candles unavailable (structural abstain)'] };
+    return { dir: 0, conf: 0, na: true, reasons: [`${STRATEGY_COUNT}-strategy engine: candles unavailable (structural abstain)`] };
   }
   try {
     const cons = evaluateStrategies(candles, {
@@ -278,7 +292,7 @@ export function classicStrategyVote(ctx) {
     if (!cons.ok || !cons.side) {
       return {
         dir: 0, conf: 0,
-        reasons: [`29-strategy engine: no consensus (${cons.readyCount || 0}/${STRATEGY_COUNT} ready, regime ${cons.regime?.regime || 'n/a'})`],
+        reasons: [`${STRATEGY_COUNT}-strategy engine: no consensus (${cons.readyCount || 0}/${STRATEGY_COUNT} ready, regime ${cons.regime?.regime || 'n/a'})`],
         strategyConsensus: cons.ok ? compactStrategyConsensus(cons) : null,
       };
     }
@@ -290,7 +304,7 @@ export function classicStrategyVote(ctx) {
     if (cons.confidence < 45) {
       return {
         dir: 0, conf: 0, na: true,
-        reasons: [`29-strategy engine: low-conviction ${cons.side} ${cons.confidence}% (regime ${cons.regime?.regime || 'n/a'}) — structural abstain`],
+        reasons: [`${STRATEGY_COUNT}-strategy engine: low-conviction ${cons.side} ${cons.confidence}% (regime ${cons.regime?.regime || 'n/a'}) — structural abstain`],
         strategyConsensus: compactStrategyConsensus(cons),
       };
     }
@@ -302,6 +316,6 @@ export function classicStrategyVote(ctx) {
       strategyConsensus: compactStrategyConsensus(cons),
     };
   } catch (e) {
-    return { dir: 0, conf: 0, na: true, reasons: [`29-strategy engine error: ${e?.message || 'unknown'}`] };
+    return { dir: 0, conf: 0, na: true, reasons: [`${STRATEGY_COUNT}-strategy engine error: ${e?.message || 'unknown'}`] };
   }
 }

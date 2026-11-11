@@ -113,7 +113,7 @@ const fitCls = (v?: string | null) =>
       : v === 'STRETCH' ? 'text-amber-300 border-amber-500/40 bg-amber-500/10'
         : 'text-red-300 border-red-500/40 bg-red-500/10';
 
-// v21.36.0: the independent 29-strategy consensus is a cross-check, so its
+// v21.36.0: the independent 25-strategy consensus is a cross-check, so its
 // chip must read differently from the TF-FIT one — CONFIRM green, CONFLICT
 // red, DIVERGENT (row side vs strategy side) amber, NEUTRAL grey.
 const stratFitCls = (v?: string | null) =>
@@ -1530,7 +1530,7 @@ export const MTFDualBoardPanel = memo(function MTFDualBoardPanel({ market, onDee
             const inst8Aligned = r.worldIndicators?.aligned8Count ?? Math.min(8, worldAligned);
             const inst8List = r.worldIndicators?.institutional8 || [];
             const isPakka = Boolean(r.directionVerified ?? r.worldIndicators?.directionVerified);
-            // v21.36.0: independent 29-strategy cross-check (display only —
+            // v21.36.0: independent 25-strategy cross-check (display only —
             // the server already applied its bounded bonus/penalty to the score).
             const sc = r.strategyConsensus || null;
             const famLine = sc?.families

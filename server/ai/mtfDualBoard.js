@@ -53,7 +53,7 @@ import { evaluateEntryTiming } from './mtfEntryTiming.js';
 import { buildFeatureVector } from './lib/featureVector.js';
 import { classifySignalFamily, evaluateFamilyFit, evaluateHierarchicalMtf } from './signalFamilies.js';
 import { evaluateMetaGate } from './metaModel.js';
-// v21.36.0 CLASSIC 29 — regime-weighted 29-strategy consensus cross-check.
+// v21.36.0 CLASSIC 29 (v21.36.4: now 25) — regime-weighted 25-strategy consensus cross-check.
 import {
   evaluateStrategies, strategyFitScore, compactStrategyConsensus,
 } from './lib/strategies/index.js';
@@ -273,7 +273,7 @@ export function fuseDualTf({ symbol, market, boardSig = null, plan = null, snap 
       const bonus = strategyFitScore(strat, side);
       if (bonus > 0) {
         score += bonus;
-        drivers.push(`29-strategy consensus ${strat.votesFor}/${strat.readyCount} ${side} ${strat.confidence}% (+${bonus})`);
+        drivers.push(`25-strategy consensus ${strat.votesFor}/${strat.readyCount} ${side} ${strat.confidence}% (+${bonus})`);
       }
       strategyFit = 'CONFIRM';
     } else {
@@ -282,9 +282,9 @@ export function fuseDualTf({ symbol, market, boardSig = null, plan = null, snap 
       if (penalty > 0) score -= penalty;
       if (strat.confidence >= 75) {
         cap = cap == null ? 64 : Math.min(cap, 64);
-        gates.push(`29-strategy consensus ${strat.side} ${strat.confidence}% vs MTF ${side} — capped 64`);
+        gates.push(`25-strategy consensus ${strat.side} ${strat.confidence}% vs MTF ${side} — capped 64`);
       } else if (penalty > 0) {
-        drivers.push(`29-strategy consensus ${strat.side} ${strat.confidence}% vs MTF ${side} (−${penalty})`);
+        drivers.push(`25-strategy consensus ${strat.side} ${strat.confidence}% vs MTF ${side} (−${penalty})`);
       }
     }
   }
@@ -995,7 +995,7 @@ export async function buildDualRow({ symbol, market, boardSig = null, modeId = '
     const htfSnap = await buildHtfBiasSnapshot(sym, mkt).catch(() => null);
     if (htfSnap?.ok) snapAligned = htfSnap;
   }
-  // v21.36.0 CLASSIC 29: compute the regime-weighted 29-strategy
+  // v21.36.0 CLASSIC (v21.36.4: 25 strategies): compute the regime-weighted 25-strategy
   // consensus from the ACTION timeframe (trigger candles preferred —
   // that is where entry timing lives). MTF_STRATEGY_CONSENSUS=off is the
   // kill-switch; insufficient candles → null (honest missing, no score).

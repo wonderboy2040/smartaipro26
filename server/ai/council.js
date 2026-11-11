@@ -101,7 +101,7 @@ export function buildFeatureMatrix({ market, symbol, sig, regime, mesh, sentCtx,
     agreement: sig?.agreement ?? null,
     voters: sig?.voters ?? sig?.participating ?? null,
   };
-  // v21.36.0: the grouped Classic29 seat carries the 29-strategy
+  // v21.36.0: the grouped Classic25 seat carries the 25-strategy
   // consensus on its vote — expose it as its own feature block.
   const strategyVote = votes.find(v => v && v.id === 'classic');
   const strat = sig?.strategyConsensus || strategyVote?.strategyConsensus || null;
