@@ -68,7 +68,7 @@ import {
 // sl trail ko improvement karo — TP1/TP2 tak reach nahi ho raha").
 import {
   trailProfileResolved, tp1ClosePctFor, classifyVolatility,
-  VOL_CLASS, MOMENTUM,
+  momentumStateOf, VOL_CLASS, MOMENTUM,
 } from './volTrail.js';
 // v21.31.0 PRE-TP1 NO-LOSS SMART TRAIL: fee-floor + volatility-classed buffer
 // and ratchet-only giveback, armed before TP1. Pure module; this file owns the
@@ -661,6 +661,53 @@ export function computeEffectiveRiskCaps(cfg = MTF_AUTO_DEFAULTS, walletINR = nu
     effectiveWalletDeployPct,
     dailyLossPct,
     dailyLossCapINR,
+  };
+}
+
+/** v21.36.8 [LIVE ENTRY QUALITY] — real-money entries must not sit inside
+ *  the entry-time noise band. Two independent board facts are checked before
+ *  ANY live order (paper is untouched):
+ *
+ *    • STOP FLOOR: |entry − SL| / entry must be ≥ 1.1 × entry ATR%. DOT/WLD
+ *      (12 Nov) went live with 0.81× / 0.79× 15m ATR stops and were stopped
+ *      out by a routine bounce before the signal could work.
+ *    • MOMENTUM FADE: momentumStateOf(side,row) === FADING means the last
+ *      closed trigger bar already moved against the trade (late/exhausted
+ *      entry). Both losing entries carried FADING at entry time.
+ *
+ *  Fail-open on MISSING ATR (no data ≠ bad data) — momentum still gates.
+ *  Exported pure for tests/audit. */
+export const LIVE_ENTRY_MIN_SL_ATR_MULT = 1.1;
+
+export function evaluateLiveEntryQuality(row, {
+  entry, stopLoss, atrPct, minSlAtrMult = LIVE_ENTRY_MIN_SL_ATR_MULT,
+} = {}) {
+  const e = Number(entry);
+  const sl = Number(stopLoss);
+  const atr = Number(atrPct) > 0 ? Number(atrPct) : null;
+  const slDistPct = e > 0 && sl > 0 ? Math.abs(e - sl) / e * 100 : null;
+  const slAtrMult = slDistPct != null && atr != null && atr > 0
+    ? slDistPct / atr
+    : null;
+  const floor = Number(minSlAtrMult) > 0 ? Number(minSlAtrMult) : LIVE_ENTRY_MIN_SL_ATR_MULT;
+  const momentumState = momentumStateOf(row?.side, row);
+  const reasons = [];
+  if (slAtrMult != null && slAtrMult + 1e-9 < floor) {
+    reasons.push(
+      `stop ${slDistPct.toFixed(2)}% = ${slAtrMult.toFixed(2)}× ATR < ${floor}× floor (noise stop-out)`,
+    );
+  }
+  if (momentumState === MOMENTUM.FADING) {
+    reasons.push(`momentum FADING (1-bar already against ${String(row?.side || 'trade').toUpperCase()})`);
+  }
+  return {
+    blocked: reasons.length > 0,
+    reasons,
+    momentumState,
+    slDistPct: slDistPct != null ? +slDistPct.toFixed(3) : null,
+    atrPct: atr,
+    slAtrMult: slAtrMult != null ? +slAtrMult.toFixed(3) : null,
+    minSlAtrMult: floor,
   };
 }
 
@@ -4195,6 +4242,30 @@ export async function mtfAutoTick(p = {}) {
       const entryAtrPct = Number(row.context?.atrPct) > 0 ? Number(row.context.atrPct) : null;
       const entryVolClass = entryAtrPct != null ? classifyVolatility(entryAtrPct) : (row.context?.volClass || VOL_CLASS.NORMAL);
       const entryT1ClosePct = tp1ClosePctFor(entryVolClass);
+      const entryMomentumState = momentumStateOf(row.side, row);
+
+      // v21.36.8 [LIVE ENTRY QUALITY] — direction + stop-floor + momentum
+      // fade gates. Real money ke liye board ka PAKKA direction chahiye
+      // (undefined/false dono unverified hain), stop entry-time ATR ke noise
+      // band se bahar hona chahiye, aur FADING momentum par nayi entry nahi.
+      // Paper rows in gates se affect nahi hote.
+      if (wantLiveOrder) {
+        if (row.directionVerified !== true) {
+          const verdict = row.directionVerdict || `WAIT-${String(row.side || '').toUpperCase()}`;
+          out.skipped.push(`${sym}: LIVE blocked — direction not PAKKA verified (${verdict})`);
+          _logEvent('live-direction-block', `${sym}: LIVE blocked — direction not PAKKA verified (${verdict})`);
+          continue;
+        }
+        const liveQuality = evaluateLiveEntryQuality(row, {
+          entry, stopLoss: sl, atrPct: entryAtrPct,
+        });
+        if (liveQuality.blocked) {
+          const why = liveQuality.reasons.join(' | ');
+          out.skipped.push(`${sym}: LIVE entry veto — ${why}`);
+          _logEvent('live-entry-veto', `${sym}: ${why} (sl ${liveQuality.slDistPct ?? '—'}% · ATR ${liveQuality.atrPct ?? '—'}% · momentum ${liveQuality.momentumState})`);
+          continue;
+        }
+      }
 
       // v21.35.0 [F-3 ENTRY-LANE RACE CURE]: session lock upar board-build se
       // PEHLE check hua tha — beech me WS-tick flip-reverse lane (runtime
@@ -4447,7 +4518,9 @@ export async function mtfAutoTick(p = {}) {
         // LIVE boardRow se refresh karta hai; 3s fast loop inhi se padhta hai.
         atrPct: entryAtrPct,
         volClass: entryVolClass,
-        momentumState: null,
+        momentumState: entryMomentumState,
+        directionVerified: row.directionVerified === true,
+        directionVerdict: row.directionVerdict ?? null,
         t1ClosePct: entryT1ClosePct,
         trendStatus: `📡 ${row.side === 'SHORT' ? 'BEARISH' : 'BULLISH'} LIVE WATCH (+0.00R)`,
         marginINR: +(finalQty * finalEntry * (isUsd ? fxRate : 1) / leverage).toFixed(2),

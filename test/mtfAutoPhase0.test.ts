@@ -27,6 +27,8 @@ import {
   mtfAutoStatus,
   computeEffectiveRiskCaps,
   computeWallet95Deployment,
+  evaluateLiveEntryQuality,
+  LIVE_ENTRY_MIN_SL_ATR_MULT,
   markAutoTradeSlSynced,
   __resetMtfAutoForTests,
 } from '../server/ai/mtfAutoLink.js';
@@ -63,6 +65,7 @@ function boardFixture(symbol = 'BTCUSDT', over = {}) {
     rows: [{
       ok: true, symbol, market: 'CRYPTO', mode: 'INTRADAY', label: '15m → 5m', holdMin: 45,
       superScore: 82, tier: 'STRONG', side: 'LONG', dir: 1, grade: 'A',
+      directionVerified: true, directionVerdict: 'VERIFIED',
       triggerFired: true, dualAligned: true, counterTrend: false, tfFit: 'OK',
       autoEligible: true, autoBlockers: [],
       plan: { entry: 100, stopLoss: 99, t1: 101, t2: 102 },
@@ -687,5 +690,91 @@ describe('Phase 0 — manual LIVE pause honesty', () => {
 
     expect(ui).toContain('disabled={liveOrdering === r.symbol || busy || liveEntriesPaused}');
     expect(ui).toContain('if (status?.liveEntryPaused)');
+  });
+});
+
+// ------------------------------------------------------------
+// F) LIVE entry quality — ATR stop floor + momentum fade + PAKKA direction
+//    Regression for the 12 Nov DOT/WLD losses: both went live on WAIT rows
+//    with 0.81× / 0.79× ATR stops while the trigger momentum was FADING.
+// ------------------------------------------------------------
+describe('Phase 0 — LIVE entry quality vetoes', () => {
+  beforeEach(() => { __resetMtfAutoForTests({ config: phase0Config() }); });
+
+  it('ATR floor constant is the 1.1× noise-band contract', () => {
+    expect(LIVE_ENTRY_MIN_SL_ATR_MULT).toBe(1.1);
+  });
+
+  it('blocks a DOT-like entry: 0.81× ATR stop + FADING momentum', () => {
+    const row = {
+      side: 'SHORT',
+      trigger: { roc1: 0.05, roc3: 0.1, volRatio: 1.2 }, // price up = against SHORT
+    };
+    const veto = evaluateLiveEntryQuality(row, {
+      entry: 0.8245, stopLoss: 0.829, atrPct: 0.68,
+    });
+    expect(veto.blocked).toBe(true);
+    expect(veto.momentumState).toBe('FADING');
+    expect(veto.slAtrMult).toBeLessThan(LIVE_ENTRY_MIN_SL_ATR_MULT);
+    expect(veto.reasons.join(' ')).toMatch(/noise stop-out/);
+    expect(veto.reasons.join(' ')).toMatch(/momentum FADING/);
+  });
+
+  it('passes a wide-stop in-direction entry', () => {
+    const row = {
+      side: 'LONG',
+      trigger: { roc1: 0.01, roc3: 0.1, volRatio: 1.0 }, // STEADY
+    };
+    const veto = evaluateLiveEntryQuality(row, {
+      entry: 100, stopLoss: 99.2, atrPct: 0.6, // 0.8% = 1.33× ATR
+    });
+    expect(veto.blocked).toBe(false);
+    expect(veto.momentumState).toBe('STEADY');
+    expect(veto.slAtrMult).toBeGreaterThan(LIVE_ENTRY_MIN_SL_ATR_MULT);
+  });
+
+  it('missing ATR fails open on the floor, but FADING still blocks', () => {
+    const row = {
+      side: 'SHORT',
+      trigger: { roc1: 0.05, roc3: 0.1, volRatio: 1.2 },
+    };
+    const veto = evaluateLiveEntryQuality(row, { entry: 100, stopLoss: 100.5 });
+    expect(veto.blocked).toBe(true);
+    expect(veto.slAtrMult).toBeNull();
+    expect(veto.reasons.join(' ')).not.toMatch(/noise stop-out/);
+    expect(veto.reasons.join(' ')).toMatch(/momentum FADING/);
+  });
+
+  it('tick refuses a LIVE entry when direction is not PAKKA verified', async () => {
+    const { paper, calls } = fakePaper();
+    const exec = liveExec();
+    const out = await mtfAutoTick({
+      boards: { CRYPTO: boardFixture('BTCUSDT', { directionVerified: undefined }) },
+      paper, liveExecute: exec, ...CRYPTO_LIVE,
+    });
+    expect(out.opened).toHaveLength(0);
+    expect(calls.opened).toHaveLength(0);
+    expect(exec).not.toHaveBeenCalled();
+    expect(out.skipped.join(' ')).toMatch(/direction not PAKKA verified/);
+  });
+
+  it('tick refuses a LIVE entry on a sub-ATR stop + FADING trigger', async () => {
+    const { paper, calls } = fakePaper();
+    const exec = liveExec();
+    const out = await mtfAutoTick({
+      boards: {
+        CRYPTO: boardFixture('DOTUSDT', {
+          side: 'SHORT',
+          plan: { entry: 100, stopLoss: 100.55, t1: 99.2, t2: 98.4 },
+          context: { atrPct: 0.68 },
+          trigger: { roc1: 0.05, roc3: 0.1, volRatio: 1.2 },
+        }),
+      },
+      paper, liveExecute: exec, ...CRYPTO_LIVE,
+    });
+    expect(out.opened).toHaveLength(0);
+    expect(calls.opened).toHaveLength(0);
+    expect(exec).not.toHaveBeenCalled();
+    expect(out.skipped.join(' ')).toMatch(/LIVE entry veto/);
   });
 });

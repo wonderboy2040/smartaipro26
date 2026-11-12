@@ -529,6 +529,8 @@ describe('v21.22.0 — 9-Point Superintelligence Upgrade', () => {
             dir: 1,
             superScore: 91,
             tier: 'ELITE',
+            directionVerified: true,
+            directionVerdict: 'VERIFIED',
             autoEligible: true,
             autoBlockers: [],
             tfFit: 'GOOD',

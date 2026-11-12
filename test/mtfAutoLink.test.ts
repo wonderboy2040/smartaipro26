@@ -60,6 +60,7 @@ function boardFixture(symbol = 'BTCUSDT', over = {}) {
     rows: [{
       ok: true, symbol, market: 'CRYPTO', mode: 'INTRADAY', label: '15m → 5m', holdMin: 45,
       superScore: 82, tier: 'STRONG', side: 'LONG', dir: 1, grade: 'A',
+      directionVerified: true, directionVerdict: 'VERIFIED',
       triggerFired: true, dualAligned: true, counterTrend: false, tfFit: 'OK',
       autoEligible: true, autoBlockers: [],
       plan: { entry: 100, stopLoss: 99, t1: 101, t2: 102 },
@@ -518,6 +519,7 @@ describe('mtfAutoLink — v21.35.6 universal multi-trade', () => {
     const mk = (sym, score) => ({
       ok: true, symbol: sym, market: 'CRYPTO', mode: 'INTRADAY', label: '15m → 5m', holdMin: 45,
       superScore: score, tier: 'ACTION', side: 'LONG', dir: 1, grade: 'A',
+      directionVerified: true, directionVerdict: 'VERIFIED',
       triggerFired: true, dualAligned: true, counterTrend: false, tfFit: 'OK',
       autoEligible: true, autoBlockers: [],
       plan: { entry: 100, stopLoss: 99, t1: 101, t2: 102 },
@@ -611,6 +613,7 @@ describe('mtfAutoLink — v21.35.6 universal multi-trade', () => {
     const mk = (sym, px) => ({
       ok: true, symbol: sym, market: 'CRYPTO', mode: 'INTRADAY', label: '15m → 5m', holdMin: 45,
       superScore: 68, tier: 'ACTION', side: 'LONG', dir: 1, grade: 'A',
+      directionVerified: true, directionVerdict: 'VERIFIED',
       triggerFired: true, ensembleSignalAvailable: true, dualAligned: true,
       counterTrend: false, tfFit: 'OK',
       autoEligible: true,

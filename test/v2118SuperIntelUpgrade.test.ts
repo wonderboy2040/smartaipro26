@@ -214,6 +214,8 @@ describe('v21.18.0 — Dual-TF Superintelligence Board + FreeLLMAPI + Wallet 10x
             dir: 1,
             superScore: 88,
             tier: 'ELITE',
+            directionVerified: true,
+            directionVerdict: 'VERIFIED',
             autoEligible: true,
             autoBlockers: [],
             tfFit: 'GOOD',

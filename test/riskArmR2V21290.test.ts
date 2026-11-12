@@ -46,6 +46,7 @@ function boardFixture(symbol = 'BTCUSDT') {
     rows: [{
       ok: true, symbol, market: 'CRYPTO', mode: 'INTRADAY', label: '15m → 5m', holdMin: 45,
       superScore: 82, tier: 'STRONG', side: 'LONG', dir: 1, grade: 'A',
+      directionVerified: true, directionVerdict: 'VERIFIED',
       triggerFired: true, dualAligned: true, counterTrend: false, tfFit: 'OK',
       autoEligible: true, autoBlockers: [],
       plan: { entry: 100, stopLoss: 99, t1: 101, t2: 102 },

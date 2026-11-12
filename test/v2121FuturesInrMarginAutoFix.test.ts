@@ -273,6 +273,7 @@ describe('v21.21.0 — CoinDCX Futures INR Wallet & Auto-Trade Insufficient Fund
               {
                 ok: true, symbol: 'BTCUSDT', market: 'CRYPTO', mode: 'INTRADAY', label: '15m + 5m',
                 superScore: 91, tier: 'ELITE', side: 'SHORT', dir: -1,
+                directionVerified: true, directionVerdict: 'VERIFIED',
                 triggerFired: true, dualAligned: true, counterTrend: false,
                 tfFit: 'OK', grade: 'A', costR: 0.1, holdMin: 45,
                 autoEligible: true, autoBlockers: [],
@@ -281,6 +282,7 @@ describe('v21.21.0 — CoinDCX Futures INR Wallet & Auto-Trade Insufficient Fund
               {
                 ok: true, symbol: 'SOLUSDT', market: 'CRYPTO', mode: 'INTRADAY', label: '15m + 5m',
                 superScore: 86, tier: 'ELITE', side: 'SHORT', dir: -1,
+                directionVerified: true, directionVerdict: 'VERIFIED',
                 triggerFired: true, dualAligned: true, counterTrend: false,
                 tfFit: 'OK', grade: 'A', costR: 0.1, holdMin: 45,
                 autoEligible: true, autoBlockers: [],
@@ -289,6 +291,7 @@ describe('v21.21.0 — CoinDCX Futures INR Wallet & Auto-Trade Insufficient Fund
               {
                 ok: true, symbol: 'NEARUSDT', market: 'CRYPTO', mode: 'INTRADAY', label: '15m + 5m',
                 superScore: 84, tier: 'STRONG', side: 'SHORT', dir: -1,
+                directionVerified: true, directionVerdict: 'VERIFIED',
                 triggerFired: true, dualAligned: true, counterTrend: false,
                 tfFit: 'OK', grade: 'A', costR: 0.1, holdMin: 45,
                 autoEligible: true, autoBlockers: [],
