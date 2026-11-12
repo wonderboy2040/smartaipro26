@@ -1377,6 +1377,56 @@ export async function buildDualRow({ symbol, market, boardSig = null, modeId = '
 const BOARD_TTL_MS = 2_000;
 const _boardCache = new Map();
 
+// v21.36.7 [BOARD MUST STAY 2s — deep lane NEVER blocks the board build]
+// The combined MTF+DEEP verdict (v21.36.6) originally AWAITed the
+// per-symbol deep ensemble inside getDualMtfBoard (12s/row cap) — a cold
+// 29-model build stalled the board's own 2s ultra-fast cycle for 7–12s,
+// the UI's 2s polls piled up, and the MTF board read as "failed" even
+// though every market returned 200. Contract fix: the deep lane is
+// single-flight background warming (fire-and-forget; results land in
+// _deepWarm 90s), and the board stamps SYNC from that warm store only —
+// zero await in the board path. First poll stamps the partial verdicts
+// already available (honest PARTIAL/WATCH), the warm runs resolve and
+// the NEXT 2s cycle stamps the full combined verdict.
+const DEEP_WARM_TTL_MS = 90_000;
+const _deepWarm = new Map();      // `${mkt}:${sym}` → { at, deep }
+const _deepWarming = new Map();   // `${mkt}:${sym}` → in-flight Promise (single-flight)
+
+function _deepWarmKey(mkt, sym) { return `${String(mkt).toUpperCase()}:${String(sym).toUpperCase()}`; }
+
+/** SYNC stamp: latest warm deep result (within TTL) for a board row. No await. */
+function deepWarmLookup(mkt, sym) {
+  const k = _deepWarmKey(mkt, sym);
+  const hit = _deepWarm.get(k);
+  if (!hit) return null;
+  if (Date.now() - hit.at > DEEP_WARM_TTL_MS) { _deepWarm.delete(k); return null; }
+  return hit.deep;
+}
+
+/** FIRE-AND-FORGET single-flight warm: start a deep run (or join one) and
+ *  store its result for the next board cycle. NEVER awaited by the board.
+ *  deepFor(sym, mkt) is caller-injected (30s-cached getDeepSignal). */
+function deepWarmFire(mkt, sym, deepFor) {
+  const k = _deepWarmKey(mkt, sym);
+  const existing = _deepWarming.get(k);
+  if (existing) return;
+  const p = deepFor(sym, mkt)
+    .then((deep) => {
+      if (deep) {
+        _deepWarm.set(k, { at: Date.now(), deep });
+        while (_deepWarm.size > 200) { // bound: the known universe is ~5 desks × 20 symbols
+          const oldest = _deepWarm.keys().next().value;
+          if (oldest === undefined) break;
+          _deepWarm.delete(oldest);
+        }
+      }
+    })
+    .catch(() => { /* honest: a failed warm just stays warming */ })
+    .finally(() => { _deepWarming.delete(k); });
+  _deepWarming.set(k, p);
+  p.catch(() => {}); // keep the promise chain quiet (result is fire-and-forget)
+}
+
 const SIDEABLE = new Set(['LONG', 'SHORT']);
 // P3: per-market auto-link candidate-pool size. CRYPTO is env-tunable
 // (MTF_BOARD_CRYPTO_UNIVERSE, default 19 = the original CRYPTO list length,
@@ -1640,27 +1690,28 @@ export async function getDualMtfBoard({ market = 'INDIA', mode = 'INTRADAY', hol
   //   • row.deepEnsemble — the raw deep stamp (side/grade/conf/SVA
   //     gate/edge) so the UI shows BOTH lanes + the combined line
   //
-  // COST BOUNDS: the caller injects `deepFor` (30s-cached +
-  // single-flight inside getDeepSignal) so repeated board polls
-  // within 30s never re-spend the ensemble. Cold: up to 6 parallel
-  // deep runs, each capped at 12s (soft deadline) — a late deep
-  // keeps warming and stamps the next 2s board cycle; a missing
-  // deep = honest PARTIAL, never an error. Stand-alone
-  // auto-blocker: an ENGINE CONFLICT (MTF vs DEEP opposite sides)
-  // blocks the row's auto-link (dualAutoCandidates reads
-  // autoBlockers; the quality-blocker strip in tradeAll keeps it).
+  // v21.36.7 CONTRACT: the deep lane must NEVER block the board build.
+  // The caller injects `deepFor` (30s-cached single-flight
+  // getDeepSignal internally) and we:
+  //   1. STAMP SYNC — read each row's latest warm deep result
+  //      (deepWarmLookup, 90s TTL, in-memory, zero await).
+  //   2. WARM IN BACKGROUND — rows without a warm result fire a
+  //      single-flight fire-and-forget deep run (deepWarmFire); the
+  //      result lands in _deepWarm and the NEXT 2s board cycle stamps
+  //      it. The 2s board contract is restored: a cold deep ensemble
+  //      (7–12s) can no longer stall the UI's 2s polls.
+  //      Cost: getDeepSignal's 30s cache + single-flight already
+  //      dedupe; a missing deep = honest PARTIAL, never an error.
+  // Stand-alone auto-blocker: an ENGINE CONFLICT (MTF vs DEEP
+  // opposite sides) blocks the row's auto-link (dualAutoCandidates
+  // reads autoBlockers; the quality-blocker strip in tradeAll keeps
+  // it) — but only when a deep verdict is actually stamped.
   // ============================================================
   const deepEligibleRows = trimmed.filter(r => r && r.ok && SIDEABLE.has(r.side) && r.symbol).slice(0, maxRows);
-  const deepMeta = { enabled: typeof deepFor === 'function' && deepEligibleRows.length > 0, rows: deepEligibleRows.length, stamped: 0 };
+  const deepMeta = { enabled: typeof deepFor === 'function' && deepEligibleRows.length > 0, rows: deepEligibleRows.length, stamped: 0, warming: 0 };
   if (typeof deepFor === 'function' && deepEligibleRows.length > 0) {
-    const rowCap = (fn, ms) => Promise.race([
-      fn,
-      new Promise(resolve => { const t = setTimeout(() => resolve(null), ms); t.unref?.(); }),
-    ]);
-    const results = await Promise.all(
-      deepEligibleRows.map(r => rowCap(deepFor(r.symbol, mkt).catch(() => null), 12_000).then(deep => ({ r, deep }))),
-    );
-    for (const { r, deep } of results) {
+    for (const r of deepEligibleRows) {
+      const deep = deepWarmLookup(mkt, r.symbol);
       const hasDeep = Boolean(deep && deep.ok !== false && deep.signal);
       const fused = fuseMtfDeepVerdict({ row: r, deep: hasDeep ? deep : null });
       r.finalVerdict = fused;
@@ -1677,7 +1728,9 @@ export async function getDualMtfBoard({ market = 'INDIA', mode = 'INTRADAY', hol
         };
         deepMeta.stamped += 1;
       } else {
-        r.deepEnsemble = { ok: false, side: null, note: 'deep lane warming/unavailable — PARTIAL verdict (ek lane)' };
+        r.deepEnsemble = { ok: false, side: null, note: 'deep lane warming (background) — next 2s board cycle stamp karega; honest PARTIAL verdict' };
+        deepWarmFire(mkt, r.symbol, deepFor); // fire-and-forget — the board NEVER awaits this
+        deepMeta.warming += 1;
       }
       if (fused.decision === 'STAND_ASIDE') {
         const blocker = `DEEP-ENSEMBLE ENGINE CONFLICT: MTF ${fused.mtf.side} vs DEEP ${fused.deep.side} — STAND ASIDE (combined verdict v21.36.6)`;
@@ -1884,8 +1937,9 @@ export async function getDualMtfBoard({ market = 'INDIA', mode = 'INTRADAY', hol
     deepEnsemble: {
       enabled: deepMeta.enabled,
       stamped: deepMeta.stamped,
+      warming: deepMeta.warming,
       rows: deepMeta.rows,
-      version: 'v21.36.6',
+      version: 'v21.36.7',
       decisions: trimmed
         .filter(r => r.finalVerdict?.decision)
         .reduce((acc, r) => { acc[r.finalVerdict.decision] = (acc[r.finalVerdict.decision] || 0) + 1; return acc; }, {}),
@@ -2106,7 +2160,12 @@ export function dualAutoCandidates(rows, cfg = {}, ctx = {}) {
 }
 
 /** Test hook — clear row + board caches. */
-export function __clearDualBoardCaches() { ROW_CACHE.clear(); _boardCache.clear(); CLOSED_BAR_CACHE.clear(); CLOSED_CANDLE_CACHE.clear(); }
+export function __clearDualBoardCaches() { ROW_CACHE.clear(); _boardCache.clear(); CLOSED_BAR_CACHE.clear(); CLOSED_CANDLE_CACHE.clear(); _deepWarm.clear(); _deepWarming.clear(); }
+
+/** v21.36.7 test hook: isolate the deep-lane warm store (board stamps sync
+ * from it; tests that drive getDualMtfBoard with a stubbed deepFor need a
+ * clean warm store so one test's stamped verdicts don't leak into another). */
+export function __resetDeepWarmForTests() { _deepWarm.clear(); _deepWarming.clear(); }
 
 /** Exported for tests/UI docs — the fuse weights in one place. */
 export const DUAL_FUSE_WEIGHTS = {
