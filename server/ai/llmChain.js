@@ -28,7 +28,7 @@ import {
   freeLlmKeyPresentCached,
   FREELLMAPI_MODELS,
 } from './freellmapi.js';
-import { getAiMode, AI_PROFILE_MODELS } from './aiMode.js';
+import { getAiMode } from './aiMode.js';
 import { resolveRouteModel } from './routeStrategy.js';
 
 export { tryParseJson };
