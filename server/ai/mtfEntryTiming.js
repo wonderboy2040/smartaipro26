@@ -92,7 +92,13 @@ export function evaluateEntryTiming({
   }
 
   // Fresh closed-bar reversal: the last CLOSED bar still pointed the other way.
-  if (row?.sideStable === false) {
+  // v21.28.0 board rows carry this under barConfirmation/signalStability; the
+  // top-level field is kept for older callers/tests. Reading only the
+  // top-level field made this guard dead code for every real board row.
+  const sideStable = row?.sideStable
+    ?? row?.barConfirmation?.sideStable
+    ?? row?.signalStability?.sideStable;
+  if (sideStable === false) {
     blockers.push('closed-bar reversal: last closed bar side differs from the live side (late flip)');
   }
   // NOTE: `triggerStable === false` alone is NOT a block — for an eligible

@@ -543,4 +543,15 @@ describe('v21.31.0 wiring locks', () => {
     expect(agent).toContain('trendPct: vel.trendPct');
     expect(agent).toContain('trendAdverse: vel.trendAdverse');
   });
+
+  it('preserves the last pre-TP1 shadow snapshot after TP1/TP2', () => {
+    const link = read('server/ai/mtfAutoLink.js');
+    // The old `|| null` stamp erased the audit trail on the first post-TP1
+    // tick — a closed LIVE row then showed preTp1Trail:null although the
+    // shadow proposal had existed while the trade was open.
+    expect(link).not.toContain('b.preTp1Trail = deepEval.preTp1Trail || null;');
+    expect(link).not.toContain('b.preTp1Trail = mon.preTp1Trail || null;');
+    expect(link).toContain('if (deepEval.preTp1Trail) b.preTp1Trail = deepEval.preTp1Trail;');
+    expect(link).toContain('if (mon.preTp1Trail) b.preTp1Trail = mon.preTp1Trail;');
+  });
 });

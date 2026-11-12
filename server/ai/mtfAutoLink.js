@@ -3302,7 +3302,10 @@ export async function mtfAutoTick(p = {}) {
 
       // v21.24.0 SMART TRAIL v2 telemetry + ROLLING TP2 (enforce only moves the target).
       b.smartTrail = deepEval.smartTrail || null;
-      b.preTp1Trail = deepEval.preTp1Trail || null;
+      // [PRE-TP1 AUDIT] Keep the LAST pre-TP1 shadow snapshot. After TP1/TP2 the
+      // evaluator stops computing it (null); `|| null` used to wipe the audit
+      // trail exactly when a closed trade is inspected.
+      if (deepEval.preTp1Trail) b.preTp1Trail = deepEval.preTp1Trail;
       if (deepEval.t2Extended && Number(deepEval.t2) > 0) {
         const prevT2 = b.t2;
         b.t2 = deepEval.t2;
@@ -4820,7 +4823,8 @@ export function getActiveAutoTradesDeepMonitor(liveQuotes = {}, opts = {}) {
         bookUpdated = true;
       }
       b.smartTrail = mon.smartTrail || null;
-      b.preTp1Trail = mon.preTp1Trail || null;
+      // [PRE-TP1 AUDIT] Preserve the last pre-TP1 shadow snapshot (see above).
+      if (mon.preTp1Trail) b.preTp1Trail = mon.preTp1Trail;
       b.currentR = mon.currentR;
       b.peakR = mon.peakR;
       b.deepMonitorStage = mon.stageCode;
@@ -5284,7 +5288,8 @@ export async function mtfAutoSuperAgentManage(input = {}) {
   b.momentumState = deepEval.momentumState || b.momentumState || null;
   b.t1ClosePct = deepEval.t1ClosePct || b.t1ClosePct || 0.5;
   b.smartTrail = deepEval.smartTrail || null;
-  b.preTp1Trail = deepEval.preTp1Trail || null;
+  // [PRE-TP1 AUDIT] Preserve the last pre-TP1 shadow snapshot (see above).
+  if (deepEval.preTp1Trail) b.preTp1Trail = deepEval.preTp1Trail;
   b.superAgentLastTickAt = now;
   b.superAgentLastPrice = ltp;
   b.superAgentTickCount = (Number(b.superAgentTickCount) || 0) + 1;

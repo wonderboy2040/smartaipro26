@@ -77,6 +77,28 @@ describe('v21.30.0 — entry timing + direction agreement', () => {
     expect(out.blockers.join(' | ')).toMatch(/closed-bar reversal/i);
   });
 
+  it('reads the board row nested sideStable (barConfirmation / signalStability)', () => {
+    // Real dual-board rows never set the top-level field. Before the fix this
+    // guard was dead code and a forming-vs-closed SIDE flip could still enter.
+    const viaBar = evaluateEntryTiming({
+      row: row({ barConfirmation: { sideStable: false, stable: false } }),
+    });
+    expect(viaBar.ok).toBe(false);
+    expect(viaBar.blockers.join(' | ')).toMatch(/closed-bar reversal/i);
+
+    const viaStability = evaluateEntryTiming({
+      row: row({ signalStability: { sideStable: false, stable: false } }),
+    });
+    expect(viaStability.ok).toBe(false);
+    expect(viaStability.blockers.join(' | ')).toMatch(/closed-bar reversal/i);
+
+    // A trigger-only change is still NOT a reversal (fresh intra-bar entry).
+    const triggerOnly = evaluateEntryTiming({
+      row: row({ barConfirmation: { sideStable: true, triggerStable: false, stable: false } }),
+    });
+    expect(triggerOnly.ok).toBe(true);
+  });
+
   it('does not block an eligible row just because the closed bar had not fired yet', () => {
     // triggerStable:false on a trigger-fired row is the normal fresh intra-bar
     // entry (forming bar fires, last closed bar did not). Only a side flip or
