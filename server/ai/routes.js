@@ -1135,6 +1135,14 @@ export function registerAITradingRoutes(app, deps) {
         boardSigs,
         fx: await mtfLiveFx(),
         fresh: req.query.fresh === '1' || req.query.fresh === 'true',
+        // v21.36.6 MTF+DEEP ENSEMBLE COMBINED VERDICT: the deep lane is
+        // caller-injected (keeps mtfDualBoard import-clean + the standalone
+        // board call never implicitly spends 6×29-model ensembles).
+        // getDeepSignal is 30s-cached + single-flight internally, so a
+        // 2s board poll re-stamps from cache, not a fresh run. The
+        // per-row 12s cap inside the board means a cold deep run that
+        // is still warming stamps the NEXT cycle, never hangs the HTTP.
+        deepFor: (sym, mkt) => getDeepSignal(sym, mkt, deps),
       });
       res.set('Cache-Control', 'no-store');
       res.json(out);

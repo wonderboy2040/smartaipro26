@@ -122,6 +122,19 @@ const stratFitCls = (v?: string | null) =>
       : v === 'DIVERGENT' ? 'text-amber-300 border-amber-500/40 bg-amber-500/10'
         : 'text-slate-400 border-slate-500/30';
 
+// v21.36.6 MTF BOARD + DEEP ENSEMBLE → COMBINED FINAL VERDICT chip.
+// ENTER = both engines aligned + PAKKA (green, the strongest lock);
+// ARMED = aligned but MTF PAKKA certificate pending (cyan, armed not fired);
+// HOLD = deep SVA veto / council SUPPRESSED (amber);
+// STAND_ASIDE = MTF vs DEEP engine conflict (red — an honest auto-blocker);
+// WATCH = one lane absent (grey, partial — never a fabricated verdict).
+const finalVerdictChip = (d?: string | null) =>
+  d === 'ENTER' ? 'text-emerald-300 border-emerald-500/50 bg-emerald-500/15'
+    : d === 'ARMED' ? 'text-cyan-300 border-cyan-500/45 bg-cyan-500/12'
+      : d === 'HOLD' ? 'text-amber-300 border-amber-500/45 bg-amber-500/12'
+        : d === 'STAND_ASIDE' ? 'text-red-300 border-red-500/50 bg-red-500/15'
+          : 'text-slate-300 border-slate-500/35 bg-slate-500/10';
+
 // v21.17.0 DEEP AUDIT: jab `d` omit ho (price levels: entry/SL/T1/T2/ltp),
 // server ke `pRoundLadder` ki adaptive precision (2..8dp) preserve karo —
 // warna DOT ($1.09, SL 1.0949, T1 1.0851) ya WLD ($0.47, SL 0.4716) UI me
@@ -1772,6 +1785,26 @@ export const MTFDualBoardPanel = memo(function MTFDualBoardPanel({ market, onDee
                   {r.aiAgents && (
                     <span className="px-1.5 py-0.5 rounded border border-violet-500/35 bg-violet-500/10 text-violet-200" title={`Top AI Agents: ${(r.aiAgents.topSeats || []).join(', ') || '16-seat ensemble'} · FreeLLMAPI: ${r.aiAgents.councilModel || r.aiAgents.aiGuardFastModel || 'ready'}`}>
                       🤖 {r.aiAgents.svaAction ? `SVA ${r.aiAgents.svaAction}` : 'AI Agents'}{r.aiAgents.voters ? ` · ${r.aiAgents.voters}/16` : ''}
+                    </span>
+                  )}
+                  {/* v21.36.6 MTF BOARD + DEEP ENSEMBLE → COMBINED FINAL VERDICT
+                      (user ask: "DEEP ENSEMBLE ANALYSIS ko MTF board se dono
+                      combine karo final verdict"). The server fuses the MTF
+                      lane (this row's side/superScore/PAKKA) with the
+                      per-symbol DEEP ENSEMBLE (29-model votes + SVA + edge)
+                      — the chip shows the combined decision + confidence,
+                      and a CONFLICT is an honest STAND-ASIDE (auto-blocked). */}
+                  {r.finalVerdict && (
+                    <span
+                      className={`px-1.5 py-0.5 rounded border font-black ${finalVerdictChip(r.finalVerdict.decision)}`}
+                      title={`FINAL VERDICT (v21.36.6 MTF+DEEP ENSEMBLE) — ${r.finalVerdict.decisionLabel}\nMTF: ${r.finalVerdict.mtf.side ?? '—'} ${r.finalVerdict.mtf.superScore ?? ''}/100 · DEEP: ${r.finalVerdict.deep.side ?? '—'}${r.finalVerdict.deep.confidence != null ? ` conf ${r.finalVerdict.deep.confidence}` : ''}\n${r.finalVerdict.reason}`}
+                    >
+                      ✅ FINAL: {r.finalVerdict.decision}{r.finalVerdict.finalConfidence != null ? ` ${r.finalVerdict.finalConfidence}%` : ''}
+                    </span>
+                  )}
+                  {r.deepEnsemble && !r.deepEnsemble.ok && (
+                    <span className="px-1.5 py-0.5 rounded border border-slate-500/30 text-slate-400" title="Deep ensemble lane warming (30s cache) — next board poll par FINAL VERDICT complete hoga">
+                      ⏳ DEEP LANE WARMING
                     </span>
                   )}
                 </div>

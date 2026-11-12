@@ -1084,6 +1084,49 @@ export interface MtfDualRow {
     councilVerdict?: string | null;
     councilNote?: string | null;
   } | null;
+  /**
+   * v21.36.6 MTF BOARD + DEEP ENSEMBLE → COMBINED FINAL VERDICT
+   * (server/ai/mtfDualBoard.js `fuseMtfDeepVerdict`). Fuses this row's MTF
+   * lane (side / superScore / PAKKA dirV+trigger) with the per-symbol DEEP
+   * ENSEMBLE (29-model votes + SVA verify + walk-forward edge).
+   *   ALIGNED + PAKKA        → ENTER · ALIGNED verify-pending → ARMED
+   *   CONFLICT (opposite)    → STAND_ASIDE (an honest auto-blocker)
+   *   deep SVA/council veto  → HOLD · one lane absent → WATCH
+   */
+  finalVerdict?: {
+    ok: boolean;
+    version?: string;
+    alignment: 'ALIGNED' | 'CONFLICT' | 'PARTIAL' | 'WATCH' | string;
+    decision: 'ENTER' | 'ARMED' | 'HOLD' | 'STAND_ASIDE' | 'WATCH' | string;
+    mtf: { side: 'LONG' | 'SHORT' | null; superScore: number | null; pukka: boolean };
+    deep: {
+      side: 'LONG' | 'SHORT' | null;
+      confidence: number | null;
+      grade?: string | null;
+      svaAction?: string | null;
+      veto?: boolean;
+      councilGate?: string | null;
+      edge?: { winRate: number | null; avgR: number | null; trades: number | null; good?: boolean } | null;
+    };
+    /** 50/50 MTF-super + deep-confidence blend (null when the combined figure would be fabricated). */
+    finalConfidence: number | null;
+    decisionLabel?: string;
+    reason?: string;
+    mtfPresent?: boolean;
+    deepPresent?: boolean;
+  } | null;
+  /** v21.36.6 raw DEEP ENSEMBLE stamp behind `finalVerdict.deep` (honest when warming). */
+  deepEnsemble?: {
+    ok: boolean;
+    side: 'LONG' | 'SHORT' | null;
+    grade?: string | null;
+    confidence?: number | null;
+    svaAction?: string | null;
+    councilGate?: string | null;
+    edge?: { winRate: number | null; avgR: number | null; trades: number | null } | null;
+    recheckedAt?: number | null;
+    note?: string;
+  } | null;
   feeProtection?: {
     roundTripFeePct?: number;
     feeBreakevenPrice?: number | null;
@@ -1159,6 +1202,21 @@ export interface MtfDualBoardView {
   // v21.23.1: `avgWinRatePct` ab nullable — missing rows pe fabricated 88 nahi milta.
   worldIndicatorsInfo?: { count: number; names: string[]; targetWinRatePct: number | null; avgWinRatePct: number | null };
   aiGuard?: { reachable: boolean; base?: string | null; profile?: 'smart' | 'balanced' | 'fast'; fastModel: string; deepModel: string; sentinelModel: string; models: string[]; count: number };
+  /**
+   * v21.36.6 MTF + DEEP ENSEMBLE combined-verdict board meta.
+   * `decisions` aggregates every row's finalVerdict.decision
+   * (ENTER/ARMED/HOLD/STAND_ASIDE/WATCH); a standalone board call that
+   * does not inject the deep lane reports enabled:false (honest — the
+   * API /board route DOES inject it; only server-internal peek paths don't).
+   */
+  deepEnsemble?: {
+    enabled: boolean;
+    stamped: number;
+    rows: number;
+    version: string;
+    decisions: Record<string, number>;
+    note?: string;
+  };
   counts?: { rows: number; overBar: number; eligible: number; strong: number; fired: number; earlyRadar?: number; unavailable: number; metalsEligible?: number; equitySimEligible?: number; directionBlocked?: number };
   /** v21.25.0 — board-wide signal→order integrity (certified / blocked / mismatches). */
   directionIntegrity?: DirectionIntegrity | null;

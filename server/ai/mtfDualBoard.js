@@ -894,6 +894,136 @@ export function applyCloudAiLane({
   return { score: next.score, cap: next.cap, tier: next.tier };
 }
 
+// ============================================================
+// v21.36.6 MTF BOARD + DEEP ENSEMBLE — COMBINED FINAL VERDICT
+// ------------------------------------------------------------
+// USER ASK: "DEEP ENSEMBLE ANALYSIS ko MTF board se dono combine
+// karke final verdict do aur improve karo."
+//
+// Two INDEPENDENT verification lanes now stamp every top-6 row:
+//   MTF LANE  — the dual-TF board verdict (this row's side / superScore /
+//               directionVerified PAKKA certificate / 8-institutional
+//               confluence / 25-strategy consensus).
+//   DEEP LANE — the per-symbol DEEP ENSEMBLE (getDeepSignal's 29-model
+//               votes + SVA verify + walk-forward edge + 29-classic
+//               strategy consensus).
+//
+// The COMBINED verdict is what one side of the "both agree" moment means:
+//   ALIGNED + PAKKA-verified (dirV + triggerFired) → ENTER  — the
+//     strongest lock the board can carry; the combined confidence is the
+//     50/50 MTF-super + deep-confidence blend (not a max(), not a
+//     rubber-stamp — a weak deep can't carry a strong MTF row and vice
+//     versa).
+//   ALIGNED, verify pending (dirV false / trigger not fired) → ARMED —
+//     both engines point the same way but the MTF PAKKA certificate is
+//     not yet stamped; the entry stays armed, not fired.
+//   CONFLICT (sides opposite) → STAND_ASIDE — the two engines disagree;
+//     a combined edge does not exist, no finalConfidence, and the auto
+//     link gets an honest blocker. This is the "improve": previously a
+//     conflict only capped the score; now it is named + blockable.
+//   PARTIAL (only one lane has a side) → WATCH — one engine absent
+//     (no deep verdict yet, or board side null); nothing is hidden.
+// DEEP-SIDE DOWNGRADES (honesty rules):
+//   • deep verify veto (SVA hard-no)          → ENTER/ARMED → HOLD
+//   • deep council gate = SUPPRESSED          → → HOLD (the 6-seat
+//     ensemble explicitly suppressed the setup)
+//   • deep council gate = PASSED             → ENTER (extra confidence)
+// Every input missing → null fields, never a fabricated verdict.
+// ============================================================
+export function fuseMtfDeepVerdict({ row = null, deep = null } = {}) {
+  const mtfSide = row?.side === 'LONG' || row?.side === 'SHORT' ? row.side : null;
+  const score = Number(row?.superScore);
+  const pukka = row?.directionVerified === true && row?.triggerFired === true;
+  const deepSig = deep?.signal ?? deep; // accept { signal, indicators, edge } or a bare signal
+  const deepSide = deepSig?.side === 'LONG' || deepSig?.side === 'SHORT' ? deepSig.side : null;
+  const deepConf = Number.isFinite(Number(deepSig?.confidence)) ? Number(deepSig.confidence) : null;
+  const svaAction = String(deepSig?.verify?.action ?? '').toUpperCase() || null;
+  const deepVeto = svaAction ? ['AVOID', 'FLIP', 'REJECT', 'STAND_ASIDE', 'VETO'].includes(svaAction) : false;
+  const council = deepSig?.council ?? null;
+  const councilGate = council?.gate ? String(council.gate).toUpperCase() : null;
+  const hasMtf = Boolean(mtfSide);
+  const hasDeep = Boolean(deepSide);
+  const mtfPresent = hasMtf;
+  const deepPresent = hasDeep;
+
+  let alignment = 'WATCH';
+  if (mtfSide && deepSide) alignment = mtfSide === deepSide ? 'ALIGNED' : 'CONFLICT';
+  else if (mtfSide || deepSide) alignment = 'PARTIAL';
+
+  // ---- final decision (combined) ----
+  let decision = 'WATCH';
+  let reason = 'ek dono lane side nahi deti — WATCH (honest partial, koi side nahi claim ki).';
+  if (alignment === 'ALIGNED') {
+    if (deepVeto) {
+      decision = 'HOLD';
+      reason = `dono ${mtfSide} par aligned par deep SVA veto (${svaAction}) — entry hold (against-signal nahi laga).`;
+    } else if (councilGate === 'SUPPRESSED') {
+      decision = 'HOLD';
+      reason = `dono ${mtfSide} par aligned par deep council gate SUPPRESSED — 6-seat ensemble ne setup ko explicitly suppress kiya.`;
+    } else if (pukka) {
+      decision = 'ENTER';
+      reason = `MTF PAKKA (${score}/100, dirV+trigger) + DEEP ENSEMBLE dono ${mtfSide} par aligned${councilGate === 'PASSED' ? ' + council gate PASSED' : ''} — combined strongest lock.`;
+    } else {
+      decision = 'ARMED';
+      reason = `dono ${mtfSide} par aligned but MTF PAKKA certificate abhi pending (dirV=${row?.directionVerified ? 'true' : 'false'} / trigger=${row?.triggerFired ? 'fired' : 'not-fired'}) — entry armed, fire pending.`;
+    }
+  } else if (alignment === 'CONFLICT') {
+    decision = 'STAND_ASIDE';
+    reason = `MTF ${mtfSide} vs DEEP ${deepSide} — ENGINE CONFLICT: dono independent lanes opposite direction bol rahi hain. Combined edge NAHI hai; koi side mat lo.`;
+  } else if (alignment === 'PARTIAL') {
+    decision = 'WATCH';
+    reason = mtfSide ? `deep ensemble side abhi available nahi (MTF ${mtfSide} only) — WATCH tak ek lane nahi decide karegi.`
+                    : `MTF board side abhi null (DEEP ${deepSide} only) — WATCH.`;
+  }
+
+  // ---- combined confidence (only meaningful when ALIGNED & not held) ----
+  let finalConfidence = null;
+  if (alignment === 'ALIGNED' && !deepVeto && councilGate !== 'SUPPRESSED') {
+    if (Number.isFinite(score) && Number.isFinite(deepConf ?? NaN)) {
+      finalConfidence = Math.round((Math.min(score, 100) + deepConf) / 2);
+    } else if (Number.isFinite(deepConf ?? NaN)) {
+      finalConfidence = Math.round(deepConf);
+    }
+    // ALIGNED + PAKKA + council PASSED → a bounded +5 (both engines + gate
+    // agree — the strongest stamp the board can show), capped at 99.
+    if (decision === 'ENTER' && councilGate === 'PASSED') {
+      finalConfidence = Math.min(99, (finalConfidence ?? 0) + 5);
+    }
+  }
+
+  return {
+    ok: true,
+    version: 'v21.36.6',
+    alignment,          // 'ALIGNED' | 'CONFLICT' | 'PARTIAL' | 'WATCH'
+    decision,           // 'ENTER' | 'ARMED' | 'HOLD' | 'STAND_ASIDE' | 'WATCH'
+    mtf: { side: mtfSide, superScore: Number.isFinite(score) ? score : null, pukka },
+    deep: {
+      side: deepSide,
+      confidence: deepConf,
+      grade: deepSig?.grade ?? null,
+      svaAction,
+      veto: deepVeto,
+      councilGate,
+      edge: deep?.edge ? {
+        winRate: Number.isFinite(Number(deep.edge.winRate)) ? Number(deep.edge.winRate) : null,
+        avgR: Number.isFinite(Number(deep.edge.avgR)) ? Number(deep.edge.avgR) : null,
+        trades: deep.edge.trades ?? null,
+        good: Number(deep.edge.avgR ?? 0) > 0.05 && Number(deep.edge.winRate ?? 0) >= 45,
+      } : null,
+    },
+    finalConfidence,
+    decisionLabel: {
+      ENTER: '🟢 COMBINED ENTER — MTF + DEEP ENSEMBLE dono align',
+      ARMED: '🔵 ARMED — dono align, MTF PAKKA confirm pending',
+      HOLD: '🟡 HOLD — deep side disagree (SVA/council gate)',
+      STAND_ASIDE: '🔴 STAND ASIDE — MTF vs DEEP engine conflict',
+      WATCH: '⚪ WATCH — ek lane absent (partial)',
+    }[decision] || decision,
+    reason,
+    mtfPresent, deepPresent,
+  };
+}
+
 export async function buildDualRow({ symbol, market, boardSig = null, modeId = 'INTRADAY', holdMin = null, snap = null, fx = null, liveLtp = null, candlesFor = null }) {
   const mode = PLAN_MODES[String(modeId || 'INTRADAY').toUpperCase()] || PLAN_MODES.INTRADAY;
   const hold = clamp(Number(holdMin) || mode.defaultHoldMin, mode.minHoldMin, mode.maxHoldMin);
@@ -1377,7 +1507,7 @@ export function buildEarlyRadar(rows, limit = 3) {
     }));
 }
 
-export async function getDualMtfBoard({ market = 'INDIA', mode = 'INTRADAY', holdMin = null, boardSigs = [], minScore = 75, limit = TOP_DEEP_TREND_LIMIT, fx = null, fresh = false, force = false, candlesFor = null } = {}) {
+export async function getDualMtfBoard({ market = 'INDIA', mode = 'INTRADAY', holdMin = null, boardSigs = [], minScore = 75, limit = TOP_DEEP_TREND_LIMIT, fx = null, fresh = false, force = false, candlesFor = null, deepFor = null } = {}) {
   ensureMtfLedgerHydrated();
   const rawMkt = String(market || 'INDIA').toUpperCase();
   const mkt = rawMkt === 'EQUITY_SIM' ? 'GLOBALFUTURES' : rawMkt;
@@ -1495,6 +1625,67 @@ export async function getDualMtfBoard({ market = 'INDIA', mode = 'INTRADAY', hol
   const trimmed = candidateRows.slice(0, maxRows);
   const q75 = trimmed.filter(r => r.superScore != null && r.superScore >= Number(minScore));
   const earlyRadar = buildEarlyRadar([...rows, ...metalsRowsRaw, ...equitySimRowsRaw].filter(Boolean), 3);
+
+  // ============================================================
+  // v21.36.6 MTF BOARD + DEEP ENSEMBLE → COMBINED FINAL VERDICT
+  // (USER ASK: "DEEP ENSEMBLE ANALYSIS ko MTF board se dono combine
+  //  karke final verdict do aur improve karo")
+  //
+  // The DEEP lane = getDeepSignal's per-symbol 29-model ensemble
+  // (votes + SVA verify + walk-forward edge + classic-25 strategy
+  // consensus). Each top-6 row with a clean side gets:
+  //   • row.finalVerdict — fuseMtfDeepVerdict({ row, deep })
+  //     (ALIGNED/CONFLICT/PARTIAL → ENTER/ARMED/HOLD/STAND_ASIDE/
+  //     WATCH + the 50/50 MTF-super/deep-confidence blend)
+  //   • row.deepEnsemble — the raw deep stamp (side/grade/conf/SVA
+  //     gate/edge) so the UI shows BOTH lanes + the combined line
+  //
+  // COST BOUNDS: the caller injects `deepFor` (30s-cached +
+  // single-flight inside getDeepSignal) so repeated board polls
+  // within 30s never re-spend the ensemble. Cold: up to 6 parallel
+  // deep runs, each capped at 12s (soft deadline) — a late deep
+  // keeps warming and stamps the next 2s board cycle; a missing
+  // deep = honest PARTIAL, never an error. Stand-alone
+  // auto-blocker: an ENGINE CONFLICT (MTF vs DEEP opposite sides)
+  // blocks the row's auto-link (dualAutoCandidates reads
+  // autoBlockers; the quality-blocker strip in tradeAll keeps it).
+  // ============================================================
+  const deepEligibleRows = trimmed.filter(r => r && r.ok && SIDEABLE.has(r.side) && r.symbol).slice(0, maxRows);
+  const deepMeta = { enabled: typeof deepFor === 'function' && deepEligibleRows.length > 0, rows: deepEligibleRows.length, stamped: 0 };
+  if (typeof deepFor === 'function' && deepEligibleRows.length > 0) {
+    const rowCap = (fn, ms) => Promise.race([
+      fn,
+      new Promise(resolve => { const t = setTimeout(() => resolve(null), ms); t.unref?.(); }),
+    ]);
+    const results = await Promise.all(
+      deepEligibleRows.map(r => rowCap(deepFor(r.symbol, mkt).catch(() => null), 12_000).then(deep => ({ r, deep }))),
+    );
+    for (const { r, deep } of results) {
+      const hasDeep = Boolean(deep && deep.ok !== false && deep.signal);
+      const fused = fuseMtfDeepVerdict({ row: r, deep: hasDeep ? deep : null });
+      r.finalVerdict = fused;
+      if (hasDeep) {
+        r.deepEnsemble = {
+          ok: true,
+          side: deep.signal.side ?? null,
+          grade: deep.signal.grade ?? null,
+          confidence: Number.isFinite(Number(deep.signal.confidence)) ? Number(deep.signal.confidence) : null,
+          svaAction: String(deep.signal.verify?.action ?? '').toUpperCase() || null,
+          councilGate: deep.signal.council?.gate ? String(deep.signal.council.gate).toUpperCase() : null,
+          edge: deep.edge ? { winRate: Number(deep.edge.winRate), avgR: Number(deep.edge.avgR), trades: deep.edge.trades ?? null } : null,
+          recheckedAt: deep.recheckedAt ?? null,
+        };
+        deepMeta.stamped += 1;
+      } else {
+        r.deepEnsemble = { ok: false, side: null, note: 'deep lane warming/unavailable — PARTIAL verdict (ek lane)' };
+      }
+      if (fused.decision === 'STAND_ASIDE') {
+        const blocker = `DEEP-ENSEMBLE ENGINE CONFLICT: MTF ${fused.mtf.side} vs DEEP ${fused.deep.side} — STAND ASIDE (combined verdict v21.36.6)`;
+        r.autoBlockers = Array.from(new Set([...(Array.isArray(r.autoBlockers) ? r.autoBlockers : []), blocker]));
+        r.autoEligible = false;
+      }
+    }
+  }
 
   // v21.25.1 [NEVER-EMPTY MARKET SCAN]: WATCH+ filter ke baad board khaali
   // ho sakta hai (choppy market) — user ko "koi coin hi nahi" nahi lagta tha.
@@ -1688,6 +1879,18 @@ export async function getDualMtfBoard({ market = 'INDIA', mode = 'INTRADAY', hol
       avgWinRatePct,
     },
     aiGuard: getAiGuardModels(),
+    // v21.36.6 MTF+DEEP ENSEMBLE COMBINED VERDICT — board-level meta so the
+    // UI + callers can see the fusion state (not just the per-row stamps).
+    deepEnsemble: {
+      enabled: deepMeta.enabled,
+      stamped: deepMeta.stamped,
+      rows: deepMeta.rows,
+      version: 'v21.36.6',
+      decisions: trimmed
+        .filter(r => r.finalVerdict?.decision)
+        .reduce((acc, r) => { acc[r.finalVerdict.decision] = (acc[r.finalVerdict.decision] || 0) + 1; return acc; }, {}),
+      note: 'MTF board verdict + DEEP ENSEMBLE (getDeepSignal 29-model) → combined FINAL VERDICT per row: ALIGNED→ENTER/ARMED · CONFLICT→STAND_ASIDE (auto-blocker) · deep SVA/council-gate veto→HOLD. deepFor = caller-injected 30s-cached deep lane; standalone board calls leave deepEnsemble off (honest, no implicit 6×29 LLM spend).',
+    },
     metalsRows,
     equitySimRows,
     earlyRadar,
