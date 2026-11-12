@@ -54,7 +54,8 @@
   },
   "description": "SmartAI Pro v21 - Three-Desk Trading Terminal (deduped committee + FreeLLMAPI superintelligence + vision seat + telegram self-heal)",
   "overrides": {
-    "qs": "^6.16.0",
+    "body-parser": "^1.20.9",
+    "qs": "^6.17.1",
     "proxy-addr": "^2.0.8"
   },
   "engines": {
