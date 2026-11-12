@@ -3434,7 +3434,7 @@ export async function mtfAutoTick(p = {}) {
         }
         if (liveCloseFailed) {
           b.syncError = String(liveCloseFailed).slice(0, 200);
-          _logEvent('live-close-failed', `⚠️ LIVE close FAILED ${b.symbol} — book row OPEN raha (exchange par position abhi bhi hai): ${b.syncError} — next tick retry`);
+          _logEvent('live-close-failed', `⚠️ LIVE close FAILED ${b.symbol} — book row OPEN (close VERIFIED nahi hua: position still active ya exchange state unknown): ${b.syncError} — next tick retry`);
           continue;
         }
         const closeReason = ucFlipProtectiveExit

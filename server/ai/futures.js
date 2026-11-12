@@ -3708,7 +3708,7 @@ export async function closeCoinDcxActivePosition({ positionId, symbol, pair } = 
       }
       return runOrderHygieneForPair({ pair: normPair, phase: 'post-flat' }).catch(e => ({ ok: false, error: String(e?.message || e) }));
     };
-    const out1 = await exitFuturesPosition(exchPosId).catch(e => ({ ok: false, error: String(e?.message || e) }));
+    let out1 = await exitFuturesPosition(exchPosId).catch(e => ({ ok: false, error: String(e?.message || e) }));
     // v21.23.10 [UUID-RESCUE]: internal-UUID id fail ho to pair-based
     // re-resolve + EK retry (SL-sync twin fix — warna ye position kabhi
     // engine se close nahi hoti, sirf native SL bachata).
@@ -3716,15 +3716,38 @@ export async function closeCoinDcxActivePosition({ positionId, symbol, pair } = 
       const exchList = await listFuturesPositions().catch(() => []);
       const row = exchList.find(p => p.pair === normPair && p.activePos !== 0);
       if (row?.id && String(row.id) !== String(exchPosId)) {
-        try {
-          const retried = await exitFuturesPosition(row.id);
-          return { ...retried, orderHygiene, orderHygienePost: retried?.ok ? await postFlatHygiene() : null };
-        } catch (e) {
-          return { ok: false, error: String(e?.message || e), orderHygiene };
-        }
+        out1 = await exitFuturesPosition(row.id)
+          .catch(e => ({ ok: false, error: String(e?.message || e) }));
       }
     }
-    return { ...out1, orderHygiene, orderHygienePost: out1?.ok ? await postFlatHygiene() : null };
+    if (out1?.ok) {
+      return { ...out1, orderHygiene, orderHygienePost: await postFlatHygiene() };
+    }
+    // v21.36.8 [STALE-OPEN RECONCILE]: CoinDCX already-flat position par
+    // exit ko [422] "There is no active position to exit" se reject karta
+    // hai (native SL/TP fill ya app/manual close). Pehle ye verdict book row
+    // ko hamesha OPEN rakhta tha aur har tick wahi dead close retry karta
+    // tha. Ab exchange ki APNI position list se truth verify hoti hai:
+    //   • read successful + pair flat → ok:true alreadyFlat (row reconcile)
+    //   • read successful + pair still active → honest failure (retry valid)
+    //   • read failed (flat:null) → honest failure, NEVER fabricated close
+    if (normPair) {
+      const flat = await confirmFuturesFlatForPair(normPair);
+      if (flat.flat === true) {
+        return {
+          ok: true, alreadyFlat: true, verified: true,
+          note: `${normPair} exchange par already flat hai — close ho chuki position ko dobara exit nahi bheja (book row reconciled)`,
+          exchangeError: out1?.error || null,
+          raw: out1?.raw ?? null,
+          orderHygiene,
+          orderHygienePost: await postFlatHygiene(),
+        };
+      }
+      if (flat.flat === false) {
+        return { ...out1, orderHygiene, exchangeActivePos: flat.activePos };
+      }
+    }
+    return { ...out1, orderHygiene };
   }
   return { ok: false, error: 'Active CoinDCX position not found', orderHygiene };
 }
@@ -4447,13 +4470,27 @@ export async function closeFuturesPosition(positionId, reason = 'Manual close') 
     if (p.mode === 'live' && p.exchangePositionId && coindcxConnected()) {
       // v21.30.0 [S1 PRE-CLOSE]: ENTRY only — protectives stay armed until flat.
       orderHygiene = await runOrderHygieneForPair({ pair: p.pair, phase: 'pre-close' }).catch(e => ({ ok: false, error: String(e?.message || e) }));
+      let exitError = null;
       try {
         const xr = await exitFuturesPosition(p.exchangePositionId);
         // v20.9.1 [H1]: wrapped rejection pehle silently pass hota tha —
         // user ko {ok:true} milta tha jabki close hua hi nahi.
-        if (!xr?.ok) return { ok: false, error: `Exchange close failed: ${xr?.error || 'wrapped rejection (200 body)'}` };
+        if (!xr?.ok) exitError = xr?.error || 'wrapped rejection (200 body)';
+      } catch (e) { exitError = String(e?.message || e); }
+      if (exitError) {
+        // v21.36.8 [STALE-OPEN RECONCILE]: already-flat position par exit
+        // [422] "There is no active position to exit" deta hai (native SL/TP
+        // ya app/manual close). Exchange ki apni list se truth verify karo:
+        // flat confirmed → book close (warna journal row hamesha OPEN rehti
+        // thi); read unknown/still active → honest failure, koi fabricated
+        // close nahi.
+        const flat = await confirmFuturesFlatForPair(p.pair);
+        if (flat.flat !== true) return { ok: false, error: `Exchange close failed: ${exitError}` };
+        pushEntry(j, {
+          kind: 'WATCH_ERROR', day: todayIST(), pair: p.pair, market: 'FUTURES',
+          reason: `close retry aborted — exchange list says ${p.pair} already flat (${exitError}); row reconciled as closed`,
+        });
       }
-      catch (e) { return { ok: false, error: `Exchange close failed: ${e?.message || e}` }; }
       // v21.30.0 [S1 POST-FLAT]: sweep the protectives only after the
       // exchange itself confirms the pair is flat. An ACK on the exit order is
       // not proof of a fill — cancelling a stop on a still-open position would

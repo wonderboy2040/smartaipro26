@@ -63,9 +63,12 @@ describe('A. wrapped-rejection verdicts (H1 money path)', () => {
     expect(i).toBeGreaterThan(-1);
     expect(src.futures.slice(Math.max(0, i - 800), i)).toMatch(/const xr = await exitFuturesPosition\(p\.exchangePositionId\);[\s\S]{0,400}if \(!xr\?\.ok\) throw new Error/);
   });
-  it('closeFuturesPosition (manual) returns honest ok:false on wrapped rejection', () => {
-    const i = src.futures.indexOf('Exchange close failed');
-    expect(src.futures.slice(i - 400, i + 100)).toMatch(/if \(!xr\?\.ok\) return \{ ok: false, error: `Exchange close failed/);
+  it('closeFuturesPosition (manual) returns honest ok:false on wrapped rejection — unless the exchange list confirms flat', () => {
+    // v21.36.8: a wrapped rejection is captured as exitError first, then the
+    // exchange's OWN position list decides. flat:true → reconciled close;
+    // flat:false/null → the same honest `Exchange close failed` verdict.
+    expect(src.futures).toMatch(/if \(!xr\?\.ok\) exitError = xr\?\.error \|\| 'wrapped rejection \(200 body\)'/);
+    expect(src.futures).toMatch(/const flat = await confirmFuturesFlatForPair\(p\.pair\);\s*\n\s*if \(flat\.flat !== true\) return \{ ok: false, error: `Exchange close failed: \$\{exitError\}` \}/);
   });
   it('reversalEngine closeLeg checks the resolved verdict', () => {
     expect(src.reversal).toMatch(/const xr = await exitFuturesPosition\(p\.exchangePositionId\);[\s\S]{0,320}if \(!xr\?\.ok\) throw new Error/);

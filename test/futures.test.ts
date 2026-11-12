@@ -25,7 +25,7 @@ vi.mock('../server/cryptoStream.js', () => ({
 import {
   futuresPairFor, baseOfFuturesPair, fetchFuturesPrices, fetchFuturesCandles,
   futuresOrderBody, fetchFuturesWallets, walletSnapshot, executeFuturesSignal,
-  watchFuturesPositions, closeFuturesPosition, __resetFuturesForTests,
+  watchFuturesPositions, closeFuturesPosition, closeCoinDcxActivePosition, __resetFuturesForTests,
   __setUsdInrForTests, inrOfUsdt, roundFuturesQty, __setWalletLegBudgetForTests,
   probeFuturesKeyScope, lastFuturesKeyScope, resetWalletTransportForReconnect,
   __walletTransportStateForTests, __clearFuturesCandleCacheForTest,
@@ -891,6 +891,121 @@ describe('watchFuturesPositions', () => {
     expect(j.positions[0].closeReason).toBe('Time-exit');
     const e = j.entries.find(x => x.kind === 'CLOSE' && x.pair === 'B-BTC_USDT');
     expect(e?.reason).toBe('Time-exit');
+  });
+});
+
+// ============================================================
+// v21.36.8 STALE-OPEN RECONCILE — exchange already flat
+// ------------------------------------------------------------
+// CoinDCX already-flat position par exit ko [422] "There is no active
+// position to exit" se reject karta hai. Ye row ko hamesha OPEN rakh
+// deta tha (dead close retry har tick). Ab close paths exchange ki
+// apni position list se truth verify karte hain — flat only when a
+// SUCCESSFUL read says flat; unknown read stays an honest failure.
+// ============================================================
+describe('stale-OPEN reconcile (exchange already flat)', () => {
+  const mkLive = (over = {}) => ({
+    id: 'p-close-1', pair: 'B-BTC_USDT', symbol: 'BTC', market: 'FUTURES', side: 'LONG',
+    mode: 'live', source: 'manual', qty: 0.01, entryPrice: 50000, notionalUSDT: 500,
+    marginUSDT: 100, leverage: 3, sl: 48400, tp: 51600, tp2: 53200,
+    openedAt: Date.now(), status: 'OPEN', exchangePositionId: 'pos-close-1', ...over,
+  });
+
+  beforeEach(() => {
+    routeFetch({ 'current_prices/futures/rt': RT_PAYLOAD });
+  });
+
+  it('closeFuturesPosition: [422] + exchange list flat → CLOSED row, no phantom OPEN', async () => {
+    __setJournalForTests({ entries: [], positions: [mkLive()] });
+    mockPrivate.mockImplementation(async (path) => {
+      if (path === '/exchange/v1/derivatives/futures/positions/exit') {
+        throw new Error('[422] There is no active position to exit');
+      }
+      if (path === '/exchange/v1/derivatives/futures/positions') return [];
+      throw new Error(`unexpected ${path}`);
+    });
+    const out = await closeFuturesPosition('p-close-1');
+    expect(out.ok).toBe(true);
+    const p = loadJournal().positions[0];
+    expect(p.status).toBe('CLOSED');
+    expect(p.closePrice).toBe(50000);
+    expect(loadJournal().entries.some(e => e.kind === 'CLOSE')).toBe(true);
+  });
+
+  it('closeFuturesPosition: [422] but pair STILL active → honest failure, row stays OPEN', async () => {
+    __setJournalForTests({ entries: [], positions: [mkLive()] });
+    mockPrivate.mockImplementation(async (path) => {
+      if (path === '/exchange/v1/derivatives/futures/positions/exit') {
+        throw new Error('[422] There is no active position to exit');
+      }
+      if (path === '/exchange/v1/derivatives/futures/positions') {
+        return [{ id: 'other-id', pair: 'B-BTC_USDT', active_pos: 0.01, avg_price: 50000, leverage: 3 }];
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    const out = await closeFuturesPosition('p-close-1');
+    expect(out.ok).toBe(false);
+    expect(String(out.error)).toMatch(/Exchange close failed/i);
+    expect(loadJournal().positions[0].status).toBe('OPEN');
+  });
+
+  it('closeFuturesPosition: exit failed + position read failed → honest failure (no fabricated close)', async () => {
+    __setJournalForTests({ entries: [], positions: [mkLive()] });
+    mockPrivate.mockImplementation(async (path) => {
+      if (path === '/exchange/v1/derivatives/futures/positions/exit') {
+        throw new Error('[422] There is no active position to exit');
+      }
+      if (path === '/exchange/v1/derivatives/futures/positions') throw new Error('positions read rate-limited');
+      throw new Error(`unexpected ${path}`);
+    });
+    const out = await closeFuturesPosition('p-close-1');
+    expect(out.ok).toBe(false);
+    expect(loadJournal().positions[0].status).toBe('OPEN');
+  });
+
+  it('closeCoinDcxActivePosition: already-flat [422] → ok:true alreadyFlat (MTF book row un-blocks)', async () => {
+    __setJournalForTests({ entries: [], positions: [] }); // not a futures-journal row
+    mockPrivate.mockImplementation(async (path) => {
+      if (path === '/exchange/v1/derivatives/futures/positions/exit') {
+        throw new Error('[422] There is no active position to exit');
+      }
+      if (path === '/exchange/v1/derivatives/futures/positions') return [];
+      throw new Error(`unexpected ${path}`);
+    });
+    const out = await closeCoinDcxActivePosition({ positionId: 'pos-mtf-1', symbol: 'LINK', pair: 'B-LINK_USDT' });
+    expect(out).toMatchObject({ ok: true, alreadyFlat: true, verified: true });
+    expect(String(out.note)).toMatch(/already flat/i);
+    expect(String(out.exchangeError)).toMatch(/422/);
+  });
+
+  it('closeCoinDcxActivePosition: [422] + still active → failure with exchangeActivePos (retry stays honest)', async () => {
+    __setJournalForTests({ entries: [], positions: [] });
+    mockPrivate.mockImplementation(async (path) => {
+      if (path === '/exchange/v1/derivatives/futures/positions/exit') {
+        throw new Error('[422] There is no active position to exit');
+      }
+      if (path === '/exchange/v1/derivatives/futures/positions') {
+        return [{ id: 'pos-mtf-1', pair: 'B-LINK_USDT', active_pos: 4.2, avg_price: 18.4, leverage: 5 }];
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    const out = await closeCoinDcxActivePosition({ positionId: 'pos-mtf-1', symbol: 'LINK', pair: 'B-LINK_USDT' });
+    expect(out.ok).toBe(false);
+    expect(out.exchangeActivePos).toBeCloseTo(4.2, 5);
+  });
+
+  it('closeCoinDcxActivePosition: position read fails → honest failure (flat never fabricated)', async () => {
+    __setJournalForTests({ entries: [], positions: [] });
+    mockPrivate.mockImplementation(async (path) => {
+      if (path === '/exchange/v1/derivatives/futures/positions/exit') {
+        throw new Error('[422] There is no active position to exit');
+      }
+      if (path === '/exchange/v1/derivatives/futures/positions') throw new Error('positions endpoint dark');
+      throw new Error(`unexpected ${path}`);
+    });
+    const out = await closeCoinDcxActivePosition({ positionId: 'pos-mtf-1', symbol: 'LINK', pair: 'B-LINK_USDT' });
+    expect(out.ok).toBe(false);
+    expect(out.alreadyFlat).toBeUndefined();
   });
 });
 
