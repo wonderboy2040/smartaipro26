@@ -46,6 +46,15 @@ telegram-bot/.state.json
 *.bak
 *.pre-live-*.bak
 *.tradeAll-off-*
+# ad-hoc local API snapshots (board/deep/positions/markets/errors) — these are
+# runtime dumps, never source. Keep them on disk for debugging but out of git.
+/.b.json
+/.c.json
+/.deep.json
+/.fw.json
+/.i.json
+/.mk.json
+/.pos.json
 
 # --- Logs & Windows stray artifacts ---
 *.log

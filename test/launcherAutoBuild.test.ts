@@ -415,12 +415,12 @@ describe('v20.8.3 frontend stale-build visibility', () => {
     const m = VERSION_TS.match(/APP_VERSION = '([^']+)'/);
     expect(m).toBeTruthy();
     expect(m![1]).toBe(PKG.version);
-    expect(PKG.version).toBe('21.36.10'); // v21.36.10 (release-bump: metals-only + exchange false-close firewall)
+    expect(PKG.version).toBe('21.36.11'); // v21.36.11 (reconciliation symbol canonicalisation + metals reversal-hint vetoes)
   });
 
-  it('Watchdog bat: v21.36.10 stamps + auto-build line + NO stale version stamps', () => {
+  it('Watchdog bat: v21.36.11 stamps + auto-build line + NO stale version stamps', () => {
     const bat = readFileSync(path.join(APP_ROOT, 'Start-SmartAI-Watchdog.bat'), 'utf8');
-    expect(bat).toContain('v21.36.10');
+    expect(bat).toContain('v21.36.11');
     expect(bat).not.toContain('v21.23.14');
     // v21.23.12 [D3]: title/REM lines me STALE stamps chhupe the (banner hi
     // bumped hota tha) — console window title purana version dikhata tha.

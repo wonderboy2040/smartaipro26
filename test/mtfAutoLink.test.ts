@@ -890,6 +890,10 @@ describe('mtfAutoLink — v21.36.9 metals-only XAU/XAG lane', () => {
     expect(metalsEntryGate(metalsRow('XAU', { directionVerified: false })).ok).toBe(false);
     expect(metalsEntryGate(metalsRow('XAU', { trapVeto: true })).ok).toBe(false);
     expect(metalsEntryGate(metalsRow('XAU', { superScore: 74 })).ok).toBe(false);
+    // v21.36.11: opposing-wave hints on the trigger stay hard even if a
+    // cached/reconstructed row skipped the board's direction certificate.
+    expect(metalsEntryGate(metalsRow('XAU', { trigger: { reversalRisk: true } })).ok).toBe(false);
+    expect(metalsEntryGate(metalsRow('XAU', { trigger: { opposingFlow: true } })).ok).toBe(false);
     expect(metalsEntryGate(metalsRow('XAG', { superScore: 75 })).ok).toBe(true);
   });
 
@@ -1052,5 +1056,81 @@ describe('mtfAutoLink — v21.36.10 exchange reconciliation false-close firewall
     expect(row?.status).toBe('CLOSED');
     expect(row?.closeReason).toBe('EXCHANGE_POSITION_CLOSED');
     expect(row?.superAgentState).toBe('IDLE');
+  });
+
+  // v21.36.11 [SYMBOL-FORM CANONICALISATION]: a live exchange row spelled as
+  // `B-XAG_USDT` must protect the base-symbol book row even if a contradictory
+  // flat proof for `XAG` is present in the same snapshot (active wins).
+  it('pair-form observed symbols protect the base book row from a contradictory flat proof', () => {
+    seedOpenXag();
+    syncCoinDcxActivePositionsToDeepMonitor([], {
+      authoritativeExchangeList: true,
+      flatConfirmedSyms: ['XAG'],
+      observedActiveSymbols: ['B-XAG_USDT'],
+      now: NOW,
+    });
+    expect(xagRow()?.status).toBe('OPEN');
+  });
+
+  it('pair-form flat proof still closes the base-symbol book row', () => {
+    seedOpenXag();
+    syncCoinDcxActivePositionsToDeepMonitor([], {
+      authoritativeExchangeList: true,
+      flatConfirmedSyms: ['B-XAG_USDT'],
+      observedActiveSymbols: [],
+      now: NOW,
+    });
+    expect(xagRow()?.status).toBe('CLOSED');
+    expect(xagRow()?.closeReason).toBe('EXCHANGE_POSITION_CLOSED');
+  });
+
+  it('a legacy concatenated book symbol (XAGUSDT) matches base-symbol flat proof', () => {
+    __resetMtfAutoForTests({
+      config: { enabled: true, executionMode: 'live', metalsOnly: true, desks: { india: false, crypto: true } },
+      state: {
+        book: [{
+          paperId: 55, liveOrderId: 'ord-xag2', livePositionId: 'pos-xag2',
+          symbol: 'XAGUSDT', pair: 'B-XAG_USDT', market: 'CRYPTO', execMarket: 'FUTURES',
+          side: 'SHORT', entry: 49.77, stopLoss: 50.17, t1: 49.29, t2: 48.97,
+          qty: 6.236, notional: 31657.74, leverage: 25,
+          openedAt: NOW - 10 * 60_000, status: 'OPEN', executionMode: 'LIVE', traded: true,
+        }],
+      },
+    });
+    syncCoinDcxActivePositionsToDeepMonitor([], {
+      authoritativeExchangeList: true,
+      flatConfirmedSyms: ['XAG'],
+      observedActiveSymbols: [],
+      now: NOW,
+    });
+    expect(mtfAutoStatus().book.find(b => b.paperId === 55)?.status).toBe('CLOSED');
+  });
+
+  it('adoption re-anchors a legacy concatenated row instead of duplicating it', () => {
+    __resetMtfAutoForTests({
+      config: { enabled: true, executionMode: 'live', metalsOnly: true, desks: { india: false, crypto: true } },
+      state: {
+        book: [{
+          paperId: 56, liveOrderId: 'ord-xag3', livePositionId: 'pos-xag3',
+          symbol: 'XAGUSDT', pair: 'B-XAG_USDT', market: 'CRYPTO', execMarket: 'FUTURES',
+          side: 'SHORT', entry: 49.77, stopLoss: 50.17, t1: 49.29, t2: 48.97,
+          qty: 6.236, notional: 31657.74, leverage: 25,
+          openedAt: NOW - 10 * 60_000, status: 'OPEN', executionMode: 'LIVE', traded: true,
+        }],
+      },
+    });
+    syncCoinDcxActivePositionsToDeepMonitor([
+      { id: 'pos-xag-live', pair: 'B-XAG_USDT', symbol: 'XAG', side: 'SHORT', qty: 6.236, entry: 49.77, ltp: 49.77, leverage: 25 },
+    ], {
+      authoritativeExchangeList: true,
+      flatConfirmedSyms: [],
+      observedActiveSymbols: ['XAG'],
+      now: NOW,
+    });
+    const rows = mtfAutoStatus().book.filter(b => b.paperId === 56);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].symbol).toBe('XAG');
+    expect(rows[0].livePositionId).toBe('pos-xag-live');
+    expect(rows[0].status).toBe('OPEN');
   });
 });

@@ -688,6 +688,12 @@ export function metalsEntryGate(row, cfg = MTF_AUTO_DEFAULTS) {
   // Existing anti-late-entry doctrine: never enter after the wave completed.
   if (row?.trigger?.postPeakTrap) reasons.push('post-peak trap');
   if (row?.trigger?.overextended) reasons.push('trigger overextended');
+  // v21.36.11 [DEFENCE-IN-DEPTH]: the board already folds reversalRisk /
+  // opposingFlow into `directionVerified`, but a cached or reconstructed row
+  // must never reach the exchange while its own trigger still flags an
+  // opposing wave. The generic lane has always hard-blocked these hints.
+  if (row?.trigger?.reversalRisk) reasons.push('trigger reversal risk');
+  if (row?.trigger?.opposingFlow) reasons.push('trigger opposing flow');
   if (row?.context?.exhausted) reasons.push('context exhausted');
   return {
     ok: reasons.length === 0,
@@ -2513,6 +2519,11 @@ export function syncCoinDcxActivePositionsToDeepMonitor(activePositions = [], op
   const st = _loadState();
   const now = Number(opts.now) || Date.now();
   const fxRate = clampN(opts.fx ?? cfg.inrPerUsdt, 40, 150, 94.95);
+  // v21.36.11 [SYMBOL-FORM CANONICALISATION]: book rows, observed exchange
+  // symbols and flat proof must all use ONE spelling. `B-XAG_USDT`,
+  // `XAGUSDT` and `XAG` are the same position; a mismatch here could either
+  // hide a live exchange row (false close) or strand a closed row.
+  const _normSym = (s) => String(normalizeLinkSymbol(s, 'CRYPTO') || '').toUpperCase().replace(/^B-/, '');
   const activeSymSet = new Set();
   // v21.36.10 [FALSE-CLOSE FIREWALL]: exchange rows with activePos != 0 whose
   // avgPrice/markPrice is momentarily missing are still OPEN positions. They
@@ -2520,8 +2531,7 @@ export function syncCoinDcxActivePositionsToDeepMonitor(activePositions = [], op
   // but MUST protect the existing book row from a false EXCHANGE_POSITION_CLOSED.
   const observedActiveSymSet = new Set(
     (Array.isArray(opts.observedActiveSymbols) ? opts.observedActiveSymbols : [])
-      .map(s => normalizeLinkSymbol(s, 'CRYPTO'))
-      .map(s => String(s || '').replace(/^B-/, ''))
+      .map(_normSym)
       .filter(Boolean),
   );
   const synced = [];
@@ -2529,7 +2539,7 @@ export function syncCoinDcxActivePositionsToDeepMonitor(activePositions = [], op
 
   for (const pos of (Array.isArray(activePositions) ? activePositions : [])) {
     const rawSym = pos.symbol || String(pos.pair || '').replace(/^B-/, '').replace(/_USDT$/i, '');
-    const sym = normalizeLinkSymbol(rawSym, 'CRYPTO');
+    const sym = _normSym(rawSym);
     const qty = Math.abs(Number(pos.qty ?? pos.activePos) || 0);
     const entry = Number(pos.entry ?? pos. entryPrice ?? pos.avgPrice) || 0;
     if (!sym || !(qty > 0) || !(entry > 0)) continue;
@@ -2578,8 +2588,13 @@ export function syncCoinDcxActivePositionsToDeepMonitor(activePositions = [], op
       ? rawPosT2
       : +(isLong ? entry + 2.4 * riskUnit : entry - 2.4 * riskUnit).toFixed(6);
 
-    const existing = st.book.find(b => b.status === 'OPEN' && b.symbol === sym && b.market === 'CRYPTO');
+    // v21.36.11 [SYMBOL-FORM CANONICALISATION]: match by the canonical base
+    // so a legacy `XAGUSDT` row is re-anchored (one book row per exchange
+    // position), never duplicated under a second spelling. Canonicalise the
+    // stored symbol in place after the match.
+    const existing = st.book.find(b => b.status === 'OPEN' && b.market === 'CRYPTO' && _normSym(b.symbol) === sym);
     if (existing) {
+      existing.symbol = sym;
       existing.executionMode = 'LIVE';
       existing.traded = true;
       existing.fullControl = true;
@@ -2799,7 +2814,7 @@ export function syncCoinDcxActivePositionsToDeepMonitor(activePositions = [], op
   // Legacy callers that omit it keep their rows open (no silent closure).
   if (opts.authoritativeExchangeList === true) {
     const flatConfirmed = Array.isArray(opts.flatConfirmedSyms)
-      ? new Set(opts.flatConfirmedSyms.map(s => String(s || '').toUpperCase()).filter(Boolean))
+      ? new Set(opts.flatConfirmedSyms.map(_normSym).filter(Boolean))
       : null;
     if (flatConfirmed) {
       for (const b of st.book) {
@@ -2808,10 +2823,10 @@ export function syncCoinDcxActivePositionsToDeepMonitor(activePositions = [], op
         if (b.executionMode !== 'LIVE') continue;
         const ageMs = now - (Number(b.openedAt) || 0);
         if (ageMs < 120_000) continue;
-        const sym = String(b.symbol || '').toUpperCase();
+        const sym = _normSym(b.symbol);
         // Exchange still reports a position for this symbol (even if its
         // normalised row was incomplete) — never close.
-        if (activeSymSet.has(b.symbol) || observedActiveSymSet.has(sym)) continue;
+        if (activeSymSet.has(sym) || observedActiveSymSet.has(sym)) continue;
         // Missing from the snapshot is not flat; require the explicit row.
         if (!flatConfirmed.has(sym)) continue;
         b.status = 'CLOSED';
