@@ -160,6 +160,21 @@ export const MTF_AUTO_DEFAULTS = {
   // 1/planned) so total margin stays within the same deploy budget.
   multiTradeMode: false,
   maxConcurrentTrades: 3,
+  // v21.36.9 [METALS-ONLY XAU/XAG]: operator-specified lane. When ON the
+  // auto engine ignores every non-XAU/XAG row, uses the per-symbol leverage
+  // overrides below (CoinDCX dynamic ceiling, not the 10x static metadata
+  // clamp), and may hold XAU + XAG concurrently (one per symbol) with the
+  // wallet split by `metalsWalletDeployPct`.
+  //   metalsOnly            : hard scope switch (desks forced to crypto only)
+  //   metalsLeverage        : XAU 50x / XAG 25x (user spec)
+  //   metalsMaxConcurrent   : max simultaneous metals positions (XAU + XAG = 2)
+  //   metalsWalletDeployPct : ~45% wallet each → both fit in a small wallet
+  //   gate                  : PAKKA (directionVerified, no trap/zone veto)
+  //                           + triggerFired + superScore ≥ minScore (75)
+  metalsOnly: false,
+  metalsLeverage: { XAU: 50, XAG: 25 },
+  metalsMaxConcurrent: 2,
+  metalsWalletDeployPct: 45,
   // v21.35.7 [UNIVERSAL-LIVE FLOOR]: the live auto-path score floor. Legacy
   // default 80 (ELITE/STRONG only). Lower to 50 to let ALL board signals
   // (WATCH+ tier) attempt their own live trade — the pre-trade quality gates
@@ -349,6 +364,8 @@ const CLAMPS = {
   maxTradesPerDay: [0, 25],         // 0 = unlimited (user spec)
   maxOpenPositions: [1, 10],        // paper engine ka apna 10-open guard bhi hai
   maxConcurrentTrades: [1, 8],      // v21.35.6: multi-trade mode ke liye per-session cap
+  metalsMaxConcurrent: [1, 4],      // v21.36.9: XAU + XAG concurrent cap
+  metalsWalletDeployPct: [10, 100], // v21.36.9: per-metals-trade wallet split
   universalLiveFloor: [50, 95],      // v21.35.7: 50 = all board signals eligible; 95 = elite-only
   cooldownMin: [5, 720],
   inrPerUsdt: [40, 150],
@@ -526,6 +543,17 @@ function _sanitizeCfg(cfg) {
   out.executionMode = String(cfg.executionMode || 'paper').toLowerCase() === 'live' ? 'live' : 'paper';
   // v21.35.6: universal multi-trade opt-in (safe default OFF = 1-trade/session).
   out.multiTradeMode = cfg.multiTradeMode === true;
+  // v21.36.9: metals-only XAU/XAG lane. Hard scope: when ON the engine can
+  // only see the crypto desk (XAU/XAG live on CoinDCX perps) — India/equity
+  // desks are forced OFF so no other symbol can ever be traded by this mode.
+  out.metalsOnly = cfg.metalsOnly === true;
+  out.metalsMaxConcurrent = clampN(cfg.metalsMaxConcurrent, 1, 4, 2);
+  out.metalsWalletDeployPct = clampN(cfg.metalsWalletDeployPct, 10, 100, 45);
+  out.metalsLeverage = {
+    XAU: clampN(cfg.metalsLeverage?.XAU, 1, 125, 50),
+    XAG: clampN(cfg.metalsLeverage?.XAG, 1, 75, 25),
+  };
+  if (out.metalsOnly) out.desks = { india: false, crypto: true };
   // v21.35.7: fire EVERY floor+ signal (strips availability blockers);
   // safe default OFF. Quality gates + risk caps remain the enforcement layer.
   out.universalTradeAll = cfg.universalTradeAll === true;
@@ -603,6 +631,111 @@ export function computeMtfWalletLeverage(walletINR, cfg = MTF_AUTO_DEFAULTS) {
     belowLev: cfg?.belowTenKLeverage ?? 10,
     aboveLev: cfg?.aboveTenKLeverage ?? 5,
   });
+}
+
+// ============================================================
+// v21.36.9 [METALS-ONLY XAU/XAG LANE]
+// ------------------------------------------------------------
+// User spec: "sirf XAU aur XAG ke live trades — XAU 50x, XAG 25x; PAKKA +
+// trigger fired + score ≥75 ho jaye jab entry lagao."
+//
+// These helpers are pure so the exact gate is unit-testable and identical in
+// the 60s sweep, the 15s deep tick, the 10s probe and the status route. The
+// gate intentionally ignores the generic availability blockers
+// (`ensembleSignalAvailable`, `aiGuard`, `autoEligible`, `autoBlockers`) — the
+// user's contract is PAKKA direction + fired trigger + score floor. Safety
+// vetoes that PAKKA itself encodes (trap / zone-wall / side conflict) and the
+// anti-late trigger flags remain hard.
+// ============================================================
+export const METALS_ONLY_SYMBOLS = Object.freeze(['XAU', 'XAG']);
+
+/** Normalize any XAU/XAG spelling (XAU, XAUUSDT, B-XAU_USDT) to the base. */
+export function metalsSymbolOf(symbol, market = 'CRYPTO') {
+  const raw = String(symbol || '').toUpperCase().trim().replace(/^B-/, '');
+  const s = normalizeLinkSymbol(raw, market);
+  return s === 'XAU' || s === 'XAG' ? s : null;
+}
+
+/** Per-symbol leverage override (XAU 50 / XAG 25 by default). */
+export function metalsLeverageFor(cfg = MTF_AUTO_DEFAULTS, symbol = '') {
+  const sym = metalsSymbolOf(symbol);
+  if (!sym) return null;
+  const dflt = sym === 'XAU' ? 50 : 25;
+  const hi = sym === 'XAU' ? 125 : 75;
+  return clampN(cfg?.metalsLeverage?.[sym], 1, hi, dflt);
+}
+
+/**
+ * Exact user gate: PAKKA + triggerFired + superScore ≥ minScore (75).
+ * PAKKA = directionVerified && no trap/zone-wall/side-conflict veto.
+ * Returns reasons for the UI/lastTick near-miss line.
+ */
+export function metalsEntryGate(row, cfg = MTF_AUTO_DEFAULTS) {
+  const score = Number(row?.superScore);
+  const minScore = Math.max(75, Number(cfg?.minScore) || 75);
+  const side = String(row?.side || '').toUpperCase();
+  const pakka = (side === 'LONG' || side === 'SHORT')
+    && row?.directionVerified === true
+    && row?.trapVeto !== true
+    && row?.zoneWallVeto !== true
+    && row?.boardSideConflict !== true;
+  const reasons = [];
+  if (!pakka) {
+    reasons.push(`direction not PAKKA verified${row?.directionVerdict ? ` (${row.directionVerdict})` : ''}`);
+  }
+  if (row?.triggerFired !== true) reasons.push('trigger fire pending');
+  if (!(score >= minScore)) reasons.push(`score ${Number.isFinite(score) ? score : '—'} < ${minScore}`);
+  // Existing anti-late-entry doctrine: never enter after the wave completed.
+  if (row?.trigger?.postPeakTrap) reasons.push('post-peak trap');
+  if (row?.trigger?.overextended) reasons.push('trigger overextended');
+  if (row?.context?.exhausted) reasons.push('context exhausted');
+  return {
+    ok: reasons.length === 0,
+    reasons,
+    pakka,
+    triggerFired: row?.triggerFired === true,
+    score: Number.isFinite(score) ? score : null,
+    minScore,
+    side: side || null,
+  };
+}
+
+/**
+ * Metals-only candidate builder. Same contract shape as
+ * `dualAutoCandidates` (autoPickBlockers) but scoped to XAU/XAG and driven by
+ * the exact PAKKA+trigger+score gate. Open-symbol / cooldown / failed-live
+ * backoff blockers are still enforced here (never bypassed).
+ */
+export function metalsAutoCandidates(rows, cfg = MTF_AUTO_DEFAULTS, ctx = {}) {
+  const openSymbols = ctx.openSymbols instanceof Set ? ctx.openSymbols : new Set(ctx.openSymbols || []);
+  const lastEntryAt = ctx.lastEntryAt || {};
+  const failMap = ctx.failMap || {};
+  const now = Number(ctx.now) || Date.now();
+  const cooldownMs = clampN(cfg?.cooldownMin, 5, 720, 30) * 60_000;
+  const out = [];
+  const seen = new Set();
+  for (const row of rows || []) {
+    const sym = metalsSymbolOf(row?.symbol);
+    if (!sym || seen.has(sym)) continue;
+    seen.add(sym);
+    const reasons = [];
+    if (!row?.ok) reasons.push('plan unavailable');
+    reasons.push(...metalsEntryGate(row, cfg).reasons);
+    if (openSymbols.has(sym)) reasons.push('already open');
+    const last = Number(lastEntryAt[sym]) || 0;
+    if (last && now - last < cooldownMs) {
+      reasons.push(`cooldown (${Math.ceil((cooldownMs - (now - last)) / 60_000)}m left)`);
+    }
+    const f = failMap[sym];
+    if (f) {
+      const leftMs = _liveFailBackoffMs(f.count) - (now - Number(f.at || 0));
+      if (leftMs > 0) reasons.push(`live-attempt backoff (${Math.ceil(leftMs / 60_000)}m left · #${f.count})`);
+    }
+    out.push({ ...row, autoPickBlockers: [...new Set(reasons)] });
+  }
+  out.sort((a, b) => (a.autoPickBlockers.length ? 1 : 0) - (b.autoPickBlockers.length ? 1 : 0)
+    || (Number(b.superScore) || 0) - (Number(a.superScore) || 0));
+  return out;
 }
 
 /**
@@ -2381,6 +2514,16 @@ export function syncCoinDcxActivePositionsToDeepMonitor(activePositions = [], op
   const now = Number(opts.now) || Date.now();
   const fxRate = clampN(opts.fx ?? cfg.inrPerUsdt, 40, 150, 94.95);
   const activeSymSet = new Set();
+  // v21.36.10 [FALSE-CLOSE FIREWALL]: exchange rows with activePos != 0 whose
+  // avgPrice/markPrice is momentarily missing are still OPEN positions. They
+  // may be absent from the normalised adoption list (qty/entry validation)
+  // but MUST protect the existing book row from a false EXCHANGE_POSITION_CLOSED.
+  const observedActiveSymSet = new Set(
+    (Array.isArray(opts.observedActiveSymbols) ? opts.observedActiveSymbols : [])
+      .map(s => normalizeLinkSymbol(s, 'CRYPTO'))
+      .map(s => String(s || '').replace(/^B-/, ''))
+      .filter(Boolean),
+  );
   const synced = [];
   let changed = false;
 
@@ -2644,16 +2787,33 @@ export function syncCoinDcxActivePositionsToDeepMonitor(activePositions = [], op
     _logEvent('position-sync', `🔒 COINDCX ACTIVE POSITION FULL CONTROL: ${sym} ${side} qty ${qty} @ ${entry} (${leverage}x) · SL ${initialSl} · TP1 ${t1} · TP2 ${t2}`);
   }
 
-  // If authoritativeExchangeList is true, close any crypto LIVE book row that is no longer open on CoinDCX (grace 120s for newly submitted orders)
+  // If authoritativeExchangeList is true, close any crypto LIVE book row that
+  // is no longer open on CoinDCX (grace 120s for newly submitted orders).
+  //
+  // v21.36.10 [FALSE-CLOSE FIREWALL]: a LIVE XAG position was still open on the
+  // exchange while the book row was stamped EXCHANGE_POSITION_CLOSED — a
+  // partial/empty `/positions` snapshot is NOT evidence that a symbol is flat.
+  // Absence from the list only proves "unknown". A row may be closed ONLY when
+  // the caller supplies POSITIVE per-symbol flat confirmation
+  // (`flatConfirmedSyms` = exchange rows for that pair with activePos === 0).
+  // Legacy callers that omit it keep their rows open (no silent closure).
   if (opts.authoritativeExchangeList === true) {
-    const flatConfirmed = Array.isArray(opts.flatConfirmedSyms) ? new Set(opts.flatConfirmedSyms) : null;
-    for (const b of st.book) {
-      if (b.status !== 'OPEN') continue;
-      if (b.market !== 'CRYPTO' && b.execMarket !== 'FUTURES') continue;
-      if (b.executionMode !== 'LIVE') continue;
-      const ageMs = now - (Number(b.openedAt) || 0);
-      if (ageMs < 120_000) continue;
-      if (!activeSymSet.has(b.symbol) && (!flatConfirmed || flatConfirmed.has(b.symbol))) {
+    const flatConfirmed = Array.isArray(opts.flatConfirmedSyms)
+      ? new Set(opts.flatConfirmedSyms.map(s => String(s || '').toUpperCase()).filter(Boolean))
+      : null;
+    if (flatConfirmed) {
+      for (const b of st.book) {
+        if (b.status !== 'OPEN') continue;
+        if (b.market !== 'CRYPTO' && b.execMarket !== 'FUTURES') continue;
+        if (b.executionMode !== 'LIVE') continue;
+        const ageMs = now - (Number(b.openedAt) || 0);
+        if (ageMs < 120_000) continue;
+        const sym = String(b.symbol || '').toUpperCase();
+        // Exchange still reports a position for this symbol (even if its
+        // normalised row was incomplete) — never close.
+        if (activeSymSet.has(b.symbol) || observedActiveSymSet.has(sym)) continue;
+        // Missing from the snapshot is not flat; require the explicit row.
+        if (!flatConfirmed.has(sym)) continue;
         b.status = 'CLOSED';
         b.closeReason = 'EXCHANGE_POSITION_CLOSED';
         b.closedAt = now;
@@ -3066,6 +3226,9 @@ async function _tryOpenUcFlipReverse({ b, boardRow, ltp, p, cfg, out, now }) {
  */
 export async function mtfAutoTick(p = {}) {
   const cfg = loadMtfAutoConfig();
+  // v21.36.9 [METALS-ONLY]: one flag drives pool scope, leverage overrides,
+  // wallet split, concurrent cap and the exact PAKKA+trigger+score gate.
+  const metalsMode = cfg.metalsOnly === true;
   const now = Number(p.now) || Date.now();
   const isRuntimeLock = p.now == null;
   const out = { at: now, opened: [], closed: [], skipped: [], shadow: [], candidates: 0, considered: 0 };
@@ -3638,8 +3801,14 @@ export async function mtfAutoTick(p = {}) {
   // maxConcurrentTrades tak. OFF (default) pe legacy 1-trade behaviour EXACT
   // same rehta hai (v21.22.0 user spec).
   const currentOpenInSession = sessionOpen();
-  const multiTrade = cfg.multiTradeMode === true;
-  const maxConcurrent = Math.max(1, Number(cfg.maxConcurrentTrades) || 3);
+  // v21.36.9 [METALS-ONLY]: XAU + XAG are allowed to coexist (one each) even
+  // when the generic multiTradeMode flag is OFF. Cap/leverage/wallet split are
+  // metals-scoped, so no other desk inherits this behaviour.
+  const multiTrade = cfg.multiTradeMode === true
+    || (metalsMode && (Number(cfg.metalsMaxConcurrent) || 2) > 1);
+  const maxConcurrent = Math.max(1, Number(
+    metalsMode ? cfg.metalsMaxConcurrent : cfg.maxConcurrentTrades,
+  ) || (metalsMode ? 2 : 3));
   if (isLiveSession && !multiTrade && currentOpenInSession.length >= 1) {
     const act = currentOpenInSession[0];
     out.skipped.push(`1 session = 1 trade lock: ${act?.symbol || 'trade'} (${act?.side || ''}) already active — next trade only after current trade finishes`);
@@ -3709,7 +3878,7 @@ export async function mtfAutoTick(p = {}) {
     // v21.35.6: multi-trade mode raises the concurrent-open cap to
     // maxConcurrentTrades; legacy path stays 1 (live) / cfg.maxOpenPositions.
     const effectiveMaxOpenPositions = multiTrade
-      ? Math.min(Number(cfg.maxConcurrentTrades) || 3, 10)
+      ? Math.min(Number(metalsMode ? cfg.metalsMaxConcurrent : cfg.maxConcurrentTrades) || (metalsMode ? 2 : 3), 10)
       : (isLiveExecActive ? 1 : cfg.maxOpenPositions);
     const effectiveMaxTradesPerDay = Number(cfg.maxTradesPerDay) || 0;
     const quotaUnlimited = !(effectiveMaxTradesPerDay > 0);
@@ -3738,19 +3907,41 @@ export async function mtfAutoTick(p = {}) {
     // CoinDCX SPOT (SYM-INR) is pool me KABHI tha hi nahi (execMarket hamesha
     // FUTURES/GLOBALFUTURES/INDIA), aur v21.23.8 ne executeSignal ko SPOT
     // FULL-STOP gate diya hai — spot ka koi auto path bachta hi nahi.
-    const poolRows = market === 'CRYPTO'
-      ? [
-          ...(board.rows || []),
-          ...(Array.isArray(board.metalsRows)
-            ? board.metalsRows.filter(m => !(board.rows || []).some(r => r?.symbol === m?.symbol))
-            : []),
-          ...(Array.isArray(board.equitySimRows)
-            ? board.equitySimRows.filter(m =>
-                !(board.rows || []).some(r => r?.symbol === m?.symbol)
-                && !(Array.isArray(board.metalsRows) ? board.metalsRows : []).some(r => r?.symbol === m?.symbol))
-            : []),
-        ]
-      : board.rows;
+    // v21.36.9 [METALS-ONLY]: XAU/XAG pool comes from `metalsRowsAll` so a
+    // sub-50 NEUTRAL row is still visible for exact near-miss reporting (and
+    // the gate fires the instant score/trigger/direction qualify). Duplicates
+    // from board.rows are de-duped by normalized base.
+    const metalsPool = metalsMode
+      ? (() => {
+          const seen = new Set();
+          const src = [
+            ...(Array.isArray(board.metalsRowsAll) ? board.metalsRowsAll : []),
+            ...(Array.isArray(board.metalsRows) ? board.metalsRows : []),
+            ...(Array.isArray(board.rows) ? board.rows : []),
+          ];
+          return src.filter(r => {
+            const sym = metalsSymbolOf(r?.symbol);
+            if (!sym || seen.has(sym)) return false;
+            seen.add(sym);
+            return true;
+          });
+        })()
+      : null;
+    const poolRows = metalsMode
+      ? metalsPool
+      : (market === 'CRYPTO'
+        ? [
+            ...(board.rows || []),
+            ...(Array.isArray(board.metalsRows)
+              ? board.metalsRows.filter(m => !(board.rows || []).some(r => r?.symbol === m?.symbol))
+              : []),
+            ...(Array.isArray(board.equitySimRows)
+              ? board.equitySimRows.filter(m =>
+                  !(board.rows || []).some(r => r?.symbol === m?.symbol)
+                  && !(Array.isArray(board.metalsRows) ? board.metalsRows : []).some(r => r?.symbol === m?.symbol))
+              : []),
+          ]
+        : board.rows);
     // When 0 positions are currently open in Live Auto mode, bypass stale symbol cooldown so user's Live Auto click always fires
     const effectiveLastEntryAt = (isLiveExecActive && sessionOpen().length === 0) ? {} : stDay.perSymbolLast;
     // v21.23.10 [THRASH-CURE]: failed-LIVE-attempt per-symbol ESCALATING backoff
@@ -3768,46 +3959,53 @@ export async function mtfAutoTick(p = {}) {
     // so WATCH-tier rows never even become live candidates; PAPER keeps the
     // stored floor untouched (backtests stay byte-identical).
     const candidateMin = Math.min(Number(cfg.minScore) || 75, effectiveLiveFloor(cfg, isLiveExecActive));
-    const picks = dualAutoCandidates(poolRows, { ...cfg, minScore: candidateMin }, { openSymbols, lastEntryAt: effectiveLastEntryAt, now }).map(r => {
-      const f = failMap[String(r?.symbol || '').toUpperCase()];
-      if (!f) return r;
-      const leftMs = _liveFailBackoffMs(f.count) - (now - Number(f.at || 0));
-      if (leftMs > 0) return { ...r, autoPickBlockers: [...r.autoPickBlockers, `live-attempt backoff (${Math.ceil(leftMs / 60_000)}m left · #${f.count})`] };
-      return r;
-    });
+    const picks = metalsMode
+      ? metalsAutoCandidates(metalsPool, cfg, { openSymbols, lastEntryAt: effectiveLastEntryAt, failMap, now })
+      : dualAutoCandidates(poolRows, { ...cfg, minScore: candidateMin }, { openSymbols, lastEntryAt: effectiveLastEntryAt, now }).map(r => {
+        const f = failMap[String(r?.symbol || '').toUpperCase()];
+        if (!f) return r;
+        const leftMs = _liveFailBackoffMs(f.count) - (now - Number(f.at || 0));
+        if (leftMs > 0) return { ...r, autoPickBlockers: [...r.autoPickBlockers, `live-attempt backoff (${Math.ceil(leftMs / 60_000)}m left · #${f.count})`] };
+        return r;
+      });
     out.considered += picks.length;
     // v21.35.7 [UNIVERSAL-ALL SIGNALS]: multi-trade + LIVE + cfg.universalTradeAll
     // — the two "availability" conditions (ensemble signal / trigger fire) are
     // relaxed so every floor+ signal can enter the pipeline; the 3 pre-trade
     // quality gates + reversal vetoes + risk caps STILL gate every commit.
-    const tradeAll = multiTrade && isLiveExecActive && cfg.universalTradeAll === true;
-    let eligible = picks.filter(r =>
-      r.autoPickBlockers.length === 0
-      && (r.side === 'LONG' || r.side === 'SHORT')
-      // v21.35.7 [UNIVERSAL-ALL]: when tradeAll is ON, the ensemble-availability
-      // check is relaxed (availability, not quality) so a WATCH/ACTION signal
-      // between AI-BOARD scans still enters the pipeline. quality is still
-      // gated by the 3 pre-trade gates + reversal vetoes + risk caps.
-      && (r.ensembleSignalAvailable !== false || tradeAll)
-      && r.directionVerified !== false
-      // v21.26.0 [DIRECTION-PARITY]: board-vs-MTF side conflict primary lane
-      // me bhi hard-block (fallback path me pehle se tha; ye gap tha).
-      && !r.boardSideConflict
-      && !r.reversalRisk
-      && !r.trigger?.reversalRisk
-      && !r.trigger?.opposingFlow
-      && !r.context?.exhausted
-      && (r.aiGuard == null || r.aiGuard.approvedCount >= 2)
-      && !r.trapVeto
-      && !r.zoneWallVeto
-      && !r.counterTrend
-    );
+    // v21.36.9: metals-only lane is driven by its exact own gate instead.
+    const tradeAll = !metalsMode && multiTrade && isLiveExecActive && cfg.universalTradeAll === true;
+    let eligible = metalsMode
+      ? picks.filter(r => (r.autoPickBlockers || []).length === 0)
+      : picks.filter(r =>
+        r.autoPickBlockers.length === 0
+        && (r.side === 'LONG' || r.side === 'SHORT')
+        // v21.35.7 [UNIVERSAL-ALL]: when tradeAll is ON, the ensemble-availability
+        // check is relaxed (availability, not quality) so a WATCH/ACTION signal
+        // between AI-BOARD scans still enters the pipeline. quality is still
+        // gated by the 3 pre-trade gates + reversal vetoes + risk caps.
+        && (r.ensembleSignalAvailable !== false || tradeAll)
+        && r.directionVerified !== false
+        // v21.26.0 [DIRECTION-PARITY]: board-vs-MTF side conflict primary lane
+        // me bhi hard-block (fallback path me pehle se tha; ye gap tha).
+        && !r.boardSideConflict
+        && !r.reversalRisk
+        && !r.trigger?.reversalRisk
+        && !r.trigger?.opposingFlow
+        && !r.context?.exhausted
+        && (r.aiGuard == null || r.aiGuard.approvedCount >= 2)
+        && !r.trapVeto
+        && !r.zoneWallVeto
+        && !r.counterTrend
+      );
     // In Live Auto mode, v21.23.6: ELITE/STRONG (or superScore >= 80) verified
     // signals are now REQUIRED — not just prioritized. "then phir auto trade
     // signals me elite top trade verify karke trade lagna chahiye" — weaker
     // eligible rows ka LIVE entry path khatam (the 1051 fallback bhi tier
     // ELITE/STRONG/>=80 enforce karta hai, so no weaker path survives).
-    if (isLiveExecActive) {
+    // v21.36.9: metals-only uses the explicit score floor (75) from its gate —
+    // the generic 80 floor must not silently re-raise it.
+    if (isLiveExecActive && !metalsMode) {
       // v21.35.7: floor is now the config knob `universalLiveFloor` (default 80,
       // legacy behaviour). Lowering it lets weaker-but-gated signals attempt
       // their own live trade.
@@ -3830,7 +4028,7 @@ export async function mtfAutoTick(p = {}) {
     // Even in Live Auto mode when 0 trades are open, require `r.triggerFired === true`,
     // `!r.trigger?.overextended`, and `!r.trigger?.postPeakTrap` so Auto-Trade NEVER enters
     // after the trend wave has already completed ("trend moment ke baad trade na lage").
-    if (eligible.length === 0 && isLiveExecActive && sessionOpen().length === 0) {
+    if (eligible.length === 0 && isLiveExecActive && !metalsMode && sessionOpen().length === 0) {
       // v21.35.7 [UNIVERSAL-ALL]: fallback second-chance path ke availability
       // requirements (ensemble / direction-verified / trigger-fired) bhi tradeAll
       // par relaxed — quality gates + reversal vetoes + risk caps wahi enforce
@@ -3902,7 +4100,9 @@ export async function mtfAutoTick(p = {}) {
           }
           return `${r.symbol}: ${why.join(', ')}`;
         });
-      out.skipped.push(`${market}: no ELITE/STRONG trigger-fired candidate${near.length ? ` — ${near.join(' | ')}` : ' (board has no directional row)'}`);
+      out.skipped.push(metalsMode
+        ? `METALS-ONLY: no XAU/XAG PAKKA+trigger+score≥${Math.max(75, Number(cfg.minScore) || 75)} candidate${near.length ? ` — ${near.join(' | ')}` : ' (XAU/XAG rows unavailable)'}`
+        : `${market}: no ELITE/STRONG trigger-fired candidate${near.length ? ` — ${near.join(' | ')}` : ' (board has no directional row)'}`);
       continue;
     }
 
@@ -4171,7 +4371,13 @@ export async function mtfAutoTick(p = {}) {
       const minQty = isUsd ? 0.0001 : 1;
       if (!(qty >= minQty)) { out.skipped.push(`${sym}: qty too small after caps (SL ${riskPerUnit.toFixed(4)})`); continue; }
 
-      const leverage = riskCaps.effectiveLeverage;
+      // v21.36.9 [METALS-ONLY XAU/XAG]: per-symbol leverage override —
+      // XAU 50x / XAG 25x. The generic wallet-tier leverage (10x) is bypassed
+      // ONLY for these two symbols; every other desk keeps riskCaps leverage.
+      // The executor independently re-validates against CoinDCX's dynamic
+      // ceiling and reports the exact exchange rejection instead of clamping.
+      const metalsLev = metalsMode ? metalsLeverageFor(cfg, sym) : null;
+      const leverage = metalsLev != null ? metalsLev : riskCaps.effectiveLeverage;
       // v21.29.0 [R2 RISK-SIZING LABELS] — explain WHY this size. Does not
       // change the legacy qty math above; the labels are the audit surface.
       const riskSizing = computeRiskBasedSizing({
@@ -4188,7 +4394,12 @@ export async function mtfAutoTick(p = {}) {
         walletINR: effectiveWalletINR,
         leverage,
         fxRate,
-        deployPct: riskCaps.effectiveWalletDeployPct,
+        // v21.36.9 [METALS-ONLY SPLIT]: ~45% wallet per metals trade so XAU
+        // and XAG can BOTH hold within the small futures wallet. Other desks
+        // keep the configured deploy cap untouched.
+        deployPct: metalsMode
+          ? Math.min(Number(cfg.metalsWalletDeployPct) || 45, Number(riskCaps.effectiveWalletDeployPct) || 100)
+          : riskCaps.effectiveWalletDeployPct,
         cfg,
       });
       const feeBePrice = feeBreakevenFloor({ entry, side: row.side, market: execMarket });
@@ -4292,9 +4503,13 @@ export async function mtfAutoTick(p = {}) {
       // enforce — shadow me decision log hota hai (trade aage jaata hai),
       // enforce me block. Fail-open on missing data (candles nahi to gate
       // block nahi karta — sirf gate-off/pass log).
-      const mcMode = mcOddsGateMode();
-      const boMode = breakoutConfirmGateMode();
-      const lwMode = lateWaveGateMode();
+      // v21.36.9 [METALS-ONLY]: the operator's exact entry contract is
+      // PAKKA + triggerFired + score ≥75. The three premium gates still RUN in
+      // metals mode so their evidence lands in the shadow log, but they never
+      // block the metals entry (mode forced to 'shadow' regardless of config).
+      const mcMode = metalsMode ? 'shadow' : mcOddsGateMode();
+      const boMode = metalsMode ? 'shadow' : breakoutConfirmGateMode();
+      const lwMode = metalsMode ? 'shadow' : lateWaveGateMode();
       if (mcMode !== 'off' || boMode !== 'off' || lwMode !== 'off') {
         const gateRow = { ...row, execMarket: guardDesk };
         // v21.35.5 [GATE-CANDLE FIX]: board stores closed trigger candles under
@@ -5057,6 +5272,21 @@ export function mtfAutoStatus(liveQuotes = {}, opts = {}) {
       ? (Number(cfg.universalLiveFloor) || 80) < LIVE_MIN_ACTION_FLOOR
       : false,
     universalTradeAll: cfg.universalTradeAll === true,
+    // v21.36.9 [METALS-ONLY XAU/XAG]: operator lane visibility. When ON the
+    // engine can only trade XAU/XAG, uses these per-symbol leverages and the
+    // exact PAKKA+triggerFired+superScore gate.
+    metalsOnly: cfg.metalsOnly === true,
+    metals: {
+      only: cfg.metalsOnly === true,
+      symbols: [...METALS_ONLY_SYMBOLS],
+      leverage: {
+        XAU: metalsLeverageFor(cfg, 'XAU'),
+        XAG: metalsLeverageFor(cfg, 'XAG'),
+      },
+      maxConcurrent: clampN(cfg.metalsMaxConcurrent, 1, 4, 2),
+      walletDeployPct: clampN(cfg.metalsWalletDeployPct, 10, 100, 45),
+      entryGate: `PAKKA direction + triggerFired + superScore ≥ ${Math.max(75, Number(cfg.minScore) || 75)}`,
+    },
     proExitPolicy: cfg.proExitPolicy !== false,
     preTp1Trail: preTp1TrailMode(),
     maxOpenPositions: cfg.maxOpenPositions,
@@ -5108,9 +5338,11 @@ export function mtfAutoStatus(liveQuotes = {}, opts = {}) {
     paperOnly: cfg.executionMode !== 'live',
     note: cfg.liveEntryPaused === true
       ? `⏸ PHASE 0 LIVE ENTRIES PAUSED — naye LIVE/UC-flip entries band; existing positions ka deep monitor, trailing SL aur exchange SL sync chalu hai. Effective caps: ${riskCaps.activeRiskPct || '—'}% risk/trade · ${riskCaps.effectiveWalletDeployPct}% wallet deploy · ${riskCaps.effectiveLeverage}x max leverage.`
-      : cfg.executionMode === 'live'
-        ? `LIVE AUTO MODE ACTIVE — ${riskCaps.effectiveWalletDeployPct}% CoinDCX Wallet Deployment + ${riskCaps.effectiveLeverage}x leverage (wallet-tier: < ₹10,000 → 10x · ≥ ₹10,000 → 5x) + Full CoinDCX Active Position Control (TP1/TP2 Trailing SL + UC Flip-Reverse + Vol-Adaptive Reversal Profit Book). Trade allowlist: FUTURES USDT + GOLD/SILVER (XAU/XAG) + EQUITY SIM — CoinDCX SPOT FULL STOP.`
-        : 'MTF AUTO-LINK PAPER mode me hai (Live Mode activate karne par ELITE/STRONG trades full-wallet deployment + wallet-tier leverage ke saath auto lagte hain; Full CoinDCX Active Position Control + TP1/TP2 Trailing SL + UC Flip-Reverse + Vol-Adaptive Reversal Profit Book). Trade allowlist: FUTURES USDT + GOLD/SILVER (XAU/XAG) + EQUITY SIM — CoinDCX SPOT FULL STOP.',
+      : cfg.metalsOnly === true
+        ? `METALS-ONLY LIVE AUTO — sirf XAU (${metalsLeverageFor(cfg, 'XAU')}x) + XAG (${metalsLeverageFor(cfg, 'XAG')}x), entry gate: PAKKA + trigger fired + score ≥ ${Math.max(75, Number(cfg.minScore) || 75)}. Wallet split ${clampN(cfg.metalsWalletDeployPct, 10, 100, 45)}% per trade · max ${clampN(cfg.metalsMaxConcurrent, 1, 4, 2)} concurrent. No other desk/symbol can trade.`
+        : cfg.executionMode === 'live'
+          ? `LIVE AUTO MODE ACTIVE — ${riskCaps.effectiveWalletDeployPct}% CoinDCX Wallet Deployment + ${riskCaps.effectiveLeverage}x leverage (wallet-tier: < ₹10,000 → 10x · ≥ ₹10,000 → 5x) + Full CoinDCX Active Position Control (TP1/TP2 Trailing SL + UC Flip-Reverse + Vol-Adaptive Reversal Profit Book). Trade allowlist: FUTURES USDT + GOLD/SILVER (XAU/XAG) + EQUITY SIM — CoinDCX SPOT FULL STOP.`
+          : 'MTF AUTO-LINK PAPER mode me hai (Live Mode activate karne par ELITE/STRONG trades full-wallet deployment + wallet-tier leverage ke saath auto lagte hain; Full CoinDCX Active Position Control + TP1/TP2 Trailing SL + UC Flip-Reverse + Vol-Adaptive Reversal Profit Book). Trade allowlist: FUTURES USDT + GOLD/SILVER (XAU/XAG) + EQUITY SIM — CoinDCX SPOT FULL STOP.',
   };
 }
 

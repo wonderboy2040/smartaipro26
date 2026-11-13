@@ -29,6 +29,7 @@ import {
   __setUsdInrForTests, inrOfUsdt, roundFuturesQty, __setWalletLegBudgetForTests,
   probeFuturesKeyScope, lastFuturesKeyScope, resetWalletTransportForReconnect,
   __walletTransportStateForTests, __clearFuturesCandleCacheForTest,
+  effectiveLeverageCap, concurrentGroupAllows,
 } from '../server/ai/futures.js';
 import { __resetForTests, __setJournalForTests, loadJournal, __setConfigForTests, todayIST } from '../server/ai/coindcxOrders.js';
 import { __ledgerRaw } from '../server/ai/ledger.js';
@@ -136,6 +137,39 @@ describe('futures pair helpers', () => {
   it('rounds qty to the instrument precision', () => {
     expect(roundFuturesQty('B-BTC_USDT', 0.000876)).toBeCloseTo(0.0008, 6);
     expect(roundFuturesQty('B-DOGE_USDT', 1234.9)).toBe(1234);
+  });
+});
+
+// ============================================================
+// v21.36.9 metals-only live execution caps
+// ============================================================
+describe('metals-only leverage + concurrency helpers', () => {
+  const xauMeta = { pair: 'B-XAU_USDT', maxLeverage: 10, dynamicMaxLeverage: 100 };
+  const xagMeta = { pair: 'B-XAG_USDT', maxLeverage: 10, dynamicMaxLeverage: 30 };
+  const btcMeta = { pair: 'B-BTC_USDT', maxLeverage: 20, dynamicMaxLeverage: 125 };
+
+  it('uses the DYNAMIC ceiling for XAU/XAG only when the caller opts in', () => {
+    expect(effectiveLeverageCap(xauMeta, { allowMetalsLeverage: true })).toBe(100);
+    expect(effectiveLeverageCap(xagMeta, { allowMetalsLeverage: true })).toBe(30);
+    // default OFF ⇒ static cap (legacy behaviour byte-identical)
+    expect(effectiveLeverageCap(xauMeta)).toBe(10);
+    expect(effectiveLeverageCap(xagMeta, { allowMetalsLeverage: false })).toBe(10);
+    // opt-in must never leak to non-metals symbols
+    expect(effectiveLeverageCap(btcMeta, { allowMetalsLeverage: true })).toBe(20);
+  });
+
+  it('allows only distinct in-group bases to coexist', () => {
+    const group = ['XAU', 'XAG'];
+    expect(concurrentGroupAllows({ pair: 'B-XAG_USDT', otherPairs: ['B-XAU_USDT'], allowGroup: group })).toBe(true);
+    expect(concurrentGroupAllows({ pair: 'B-XAU_USDT', otherPairs: ['B-XAG_USDT'], allowGroup: group })).toBe(true);
+    // same pair duplicate is NOT concurrency
+    expect(concurrentGroupAllows({ pair: 'B-XAU_USDT', otherPairs: ['B-XAU_USDT'], allowGroup: group })).toBe(false);
+    // any non-group active position still blocks
+    expect(concurrentGroupAllows({ pair: 'B-XAG_USDT', otherPairs: ['B-BTC_USDT'], allowGroup: group })).toBe(false);
+    // requested symbol outside the group never qualifies
+    expect(concurrentGroupAllows({ pair: 'B-BTC_USDT', otherPairs: ['B-XAU_USDT'], allowGroup: group })).toBe(false);
+    // no opt-in ⇒ legacy lock
+    expect(concurrentGroupAllows({ pair: 'B-XAG_USDT', otherPairs: ['B-XAU_USDT'] })).toBe(false);
   });
 });
 

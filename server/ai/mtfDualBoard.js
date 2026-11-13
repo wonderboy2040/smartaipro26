@@ -1667,7 +1667,14 @@ export async function getDualMtfBoard({ market = 'INDIA', mode = 'INTRADAY', hol
       }).catch(() => null);
     })),
   ]);
-  const metalsRows = rankDualRows(metalsRowsRaw.filter(Boolean), Number(minScore || 75)).map(r => ({ ...r, checklist: undefined }));
+  // v21.36.9 [METALS-ONLY VISIBILITY]: `metalsRows` keeps the legacy UI
+  // contract (WATCH+ / directionVerified rows only). The auto engine's
+  // metals-only lane needs BOTH XAU/XAG rows even while they are still
+  // NEUTRAL/sub-50 so it can report the exact near-miss (score/trigger/dir)
+  // and fire the moment PAKKA + trigger + score≥75 lands. `metalsRowsAll` is
+  // the unfiltered source array; existing consumers are untouched.
+  const metalsRowsAll = metalsRowsRaw.filter(Boolean).map(r => ({ ...r, checklist: undefined }));
+  const metalsRows = rankDualRows(metalsRowsAll, Number(minScore || 75)).map(r => ({ ...r, checklist: undefined }));
   const equitySimRows = rankDualRows(equitySimRowsRaw.filter(Boolean), Number(minScore || 75)).slice(0, 6).map(r => ({ ...r, checklist: undefined }));
 
   const minBar = Number(minScore || 75);
@@ -1946,6 +1953,8 @@ export async function getDualMtfBoard({ market = 'INDIA', mode = 'INTRADAY', hol
       note: 'MTF board verdict + DEEP ENSEMBLE (getDeepSignal 29-model) → combined FINAL VERDICT per row: ALIGNED→ENTER/ARMED · CONFLICT→STAND_ASIDE (auto-blocker) · deep SVA/council-gate veto→HOLD. deepFor = caller-injected 30s-cached deep lane; standalone board calls leave deepEnsemble off (honest, no implicit 6×29 LLM spend).',
     },
     metalsRows,
+    // v21.36.9: unfiltered XAU/XAG rows (auto engine's metals-only lane).
+    metalsRowsAll,
     equitySimRows,
     earlyRadar,
     scanRows,
@@ -1958,6 +1967,7 @@ export async function getDualMtfBoard({ market = 'INDIA', mode = 'INTRADAY', hol
       unavailable: trimmed.filter(r => !r.ok).length,
       directionBlocked: trimmed.filter(r => r.directionCertificate?.ok === false).length,
       metalsEligible: metalsRows.filter(r => r.autoEligible).length,
+      metalsScanned: metalsRowsAll.length,
       equitySimEligible: equitySimRows.filter(r => r.autoEligible).length,
     },
     rows: trimmed.map(r => ({

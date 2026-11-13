@@ -102,6 +102,42 @@ const METALS_SET = new Set(METALS_BASES);
 export function isMetalsBase(base) {
   return METALS_SET.has(String(base || '').toUpperCase());
 }
+
+// ============================================================
+// v21.36.9 [METALS-ONLY LIVE EXECUTION CAPS]
+// ------------------------------------------------------------
+// CoinDCX reports XAU/XAG with a STATIC `maxLeverage` of 10 but a
+// `dynamic_position_leverage_details` ceiling of 100 (XAU) / 30 (XAG).
+// The operator contract is XAU 50x / XAG 25x, so the executor may honour the
+// dynamic ceiling for these two symbols ONLY when the caller explicitly opts
+// in (`allowMetalsLeverage`). Every other symbol keeps the static cap — no
+// global clamp is loosened.
+export function effectiveLeverageCap(meta, opts = {}) {
+  const base = String(opts.base || baseOfFuturesPair(meta?.pair) || '').toUpperCase();
+  const staticCap = Number(meta?.maxLeverage) >= 1 ? Math.floor(Number(meta.maxLeverage)) : 20;
+  const dynCap = Number(meta?.dynamicMaxLeverage) >= 1 ? Math.floor(Number(meta.dynamicMaxLeverage)) : null;
+  if (opts.allowMetalsLeverage === true && isMetalsBase(base) && dynCap != null) {
+    return Math.max(staticCap, dynCap);
+  }
+  return staticCap;
+}
+
+// v21.36.9 [METALS-ONLY CONCURRENCY]: XAU and XAG may hold together (both
+// in `allowGroup`, distinct bases). Same-pair duplicates are still handled by
+// the existing already-open / opposite-side branches BEFORE this helper, and
+// any non-group active position still hard-blocks (1 session = 1 trade).
+export function concurrentGroupAllows(opts = {}) {
+  const group = new Set((opts.allowGroup || []).map(s => String(s || '').toUpperCase()).filter(Boolean));
+  if (group.size === 0) return false;
+  const reqBase = baseOfFuturesPair(opts.pair);
+  if (!group.has(reqBase)) return false;
+  const others = Array.isArray(opts.otherPairs) ? opts.otherPairs : [];
+  for (const op of others) {
+    const b = baseOfFuturesPair(op);
+    if (!group.has(b) || b === reqBase) return false;
+  }
+  return true;
+}
 const METALS_FAPI_KLINES = 'https://fapi.binance.com/fapi/v1/klines';
 const METALS_FAPI_TICKER = 'https://fapi.binance.com/fapi/v1/ticker/24hr';
 // v21.9.0 METALS RESCUE: Yahoo COMEX continuous fronts — gold GC=F /
@@ -2691,6 +2727,10 @@ async function _executeMtfDualLiveOrderInner(opts = {}) {
     symbol, side, leverage, entry: planEntry, stopLoss: planSl, t1: planT1, t2: planT2,
     superScore = null, tier = null, mode = 'INTRADAY', source = 'mtf-dual-board',
     marginUSDT = null, qtyINR = null,
+    // v21.36.9 [METALS-ONLY LIVE]: caller-scoped opt-ins. Both default OFF, so
+    // every existing caller keeps the static leverage cap + 1-trade lock.
+    allowMetalsLeverage = false,
+    allowConcurrentGroup = null,
   } = opts || {};
 
   const ordersMod = await import('./coindcxOrders.js');
@@ -2849,7 +2889,9 @@ async function _executeMtfDualLiveOrderInner(opts = {}) {
   }
 
   const tierLev = walletINR > 0 && walletINR < 10000 ? 10 : 5;
-  const maxInstLev = Number(meta?.maxLeverage) >= 1 ? Math.floor(Number(meta.maxLeverage)) : 20;
+  // v21.36.9: metals opt-in uses the instrument's DYNAMIC leverage ceiling
+  // (XAU 100 / XAG 30); all other symbols/callers keep the static cap.
+  const maxInstLev = effectiveLeverageCap(meta, { base, allowMetalsLeverage });
   let lev = Math.max(1, Math.min(maxInstLev, Math.floor(Number(leverage) || tierLev)));
 
   // v21.22.0: 100% CoinDCX Wallet Deployment as per Wallet amount & Leverage (< ₹10,000 → 10x, ≥ ₹10,000 → 5x)
@@ -3018,9 +3060,15 @@ async function _executeMtfDualLiveOrderInner(opts = {}) {
         };
       }
       if (activeExchList.length > 0) {
-        const otherActive = activeExchList[0];
-        const msg = `1 session = 1 trade lock: ${otherActive.pair} is already active on CoinDCX — next trade will open only after ${otherActive.pair} finishes`;
-        return { ok: false, blocked: true, alreadyActivePair: otherActive.pair, reason: msg, error: msg };
+        // v21.36.9 [METALS-ONLY]: XAU + XAG may coexist (distinct group bases).
+        // Any other active pair still hits the 1-session-1-trade lock.
+        if (concurrentGroupAllows({ pair, otherPairs: activeExchList.map(p => p.pair), allowGroup: allowConcurrentGroup })) {
+          // allowed — fall through to the journal checks / order placement
+        } else {
+          const otherActive = activeExchList[0];
+          const msg = `1 session = 1 trade lock: ${otherActive.pair} is already active on CoinDCX — next trade will open only after ${otherActive.pair} finishes`;
+          return { ok: false, blocked: true, alreadyActivePair: otherActive.pair, reason: msg, error: msg };
+        }
       }
     }
 
@@ -3060,6 +3108,11 @@ async function _executeMtfDualLiveOrderInner(opts = {}) {
                 t2: pos.tp2 || tp2,
               },
             };
+          }
+          // v21.36.9 [METALS-ONLY]: a different in-group symbol is allowed to
+          // coexist with the requested one; same-pair already returned above.
+          if (concurrentGroupAllows({ pair, otherPairs: [pos.pair], allowGroup: allowConcurrentGroup })) {
+            continue;
           }
           const msg = `1 session = 1 trade lock: ${pos.symbol || pos.pair} (${pos.side}) is already active in this session — next trade will open only after it finishes`;
           return { ok: false, blocked: true, alreadyActivePair: pos.pair, reason: msg, error: msg };
@@ -3286,6 +3339,23 @@ export async function syncCoinDcxActivePositionsForControl({ force = false } = {
       exchPositions = null;
     }
   }
+  // v21.36.10 [FALSE-CLOSE FIREWALL]: derive POSITIVE per-symbol flat proof
+  // from the raw `/positions` rows. A symbol missing from the response is NOT
+  // flat — only an explicit row with activePos === 0 is. `observedActiveSyms`
+  // additionally protects positions whose avgPrice/markPrice was momentarily
+  // missing (they fail the normalised `exchPositions` filter but are clearly
+  // still open on the exchange).
+  const flatConfirmedSyms = new Set();
+  const observedActiveSyms = new Set();
+  if (Array.isArray(allExchRows)) {
+    for (const p of allExchRows) {
+      if (!p || !p.pair) continue;
+      const sym = baseOfFuturesPair(p.pair);
+      if (!sym) continue;
+      if (Math.abs(Number(p.activePos) || 0) > 0) observedActiveSyms.add(sym);
+      else flatConfirmedSyms.add(sym);
+    }
+  }
 
   const j = loadJournalFresh();
   const openLiveJournal = Array.isArray(j?.positions)
@@ -3419,6 +3489,11 @@ export async function syncCoinDcxActivePositionsForControl({ force = false } = {
   const value = {
     ok: true,
     authoritativeExchangeList: Array.isArray(exchPositions),
+    // v21.36.10: close LIVE rows only on explicit flat proof (see
+    // mtfAutoLink.syncCoinDcxActivePositionsToDeepMonitor). Empty/partial
+    // snapshots return empty sets -> nothing closes.
+    flatConfirmedSyms: Array.from(flatConfirmedSyms),
+    observedActiveSymbols: Array.from(observedActiveSyms),
     positions: activeOut,
   };
   _activePosCtrlCache = { at: now, value };

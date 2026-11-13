@@ -235,7 +235,7 @@ import { buildAccuracyDashboard } from './accuracyDashboard.js';
 import { flagMatrixSnapshot, applyFlagChange } from './championChallenger.js';
 // v21.32.0 [PHASE B3]: latency P50/P95 lanes (honest upstream-feed measurement).
 import { latencyRecorder } from './lib/latencyStats.js';
-import { mtfAutoTick, mtfAutoStatus, mtfAutoRiskArmState, loadMtfAutoConfig, updateMtfAutoConfig, setMtfAutoEnabled, mtfAutoEnabled, MTF_AUTO_TICK_SEC, normalizeLinkSymbol, recordLiveMtfBoardTrade, recordPaperMtfBoardTrade, getActiveAutoTradesDeepMonitor, syncCoinDcxActivePositionsToDeepMonitor, isLiveAttemptBackoffActive, mtfAutoOpenCount, mtfAutoOpenRows, markAutoTradeTpSynced, markAutoTradeSlSynced, markAutoTradeSlRetry, getAutoTradeSuperAgentOpenTrades, getAutoTradeSuperAgentCloseReason } from './mtfAutoLink.js';
+import { mtfAutoTick, mtfAutoStatus, mtfAutoRiskArmState, loadMtfAutoConfig, updateMtfAutoConfig, setMtfAutoEnabled, mtfAutoEnabled, MTF_AUTO_TICK_SEC, normalizeLinkSymbol, metalsSymbolOf, metalsEntryGate, recordLiveMtfBoardTrade, recordPaperMtfBoardTrade, getActiveAutoTradesDeepMonitor, syncCoinDcxActivePositionsToDeepMonitor, isLiveAttemptBackoffActive, mtfAutoOpenCount, mtfAutoOpenRows, markAutoTradeTpSynced, markAutoTradeSlSynced, markAutoTradeSlRetry, getAutoTradeSuperAgentOpenTrades, getAutoTradeSuperAgentCloseReason } from './mtfAutoLink.js';
 // v21.29.0 [R2 RISK ARM] — arm blockers / typed override / SAFE preset.
 import { RISK_ACK_PHRASE, evaluateLiveArmRisk, evaluateLiveArmConfigPatch, describeDeskArmState } from './riskArm.js';
 // v21.26.0 AI SUPER INTELLIGENCE — per-trade tick agent. Owns only routing /
@@ -1737,6 +1737,11 @@ export function registerAITradingRoutes(app, deps) {
         if (ctrl?.ok) {
           syncCoinDcxActivePositionsToDeepMonitor(ctrl.positions || [], {
             authoritativeExchangeList: ctrl.authoritativeExchangeList,
+            // v21.36.10: only explicit flat proof closes a LIVE book row —
+            // a partial/empty /positions snapshot must never orphan an open
+            // exchange position from the deep monitor (XAG false-close).
+            flatConfirmedSyms: ctrl.flatConfirmedSyms,
+            observedActiveSymbols: ctrl.observedActiveSymbols,
             walletINR: walletEquityINR,
           });
         }
@@ -1752,6 +1757,15 @@ export function registerAITradingRoutes(app, deps) {
         if (!hasEnvOrSavedCreds) {
           return { ok: false, blocked: true, reason: 'CoinDCX API key & secret not connected — add COINDCX_API_KEY + COINDCX_SECRET in .env or connect in Portfolio tab', error: 'CoinDCX API key & secret not connected' };
         }
+        // v21.36.9 [METALS-ONLY SCOPE]: hard executor-boundary scope. While
+        // the mode is ON, only XAU/XAG may ever reach the exchange, and their
+        // 50x/25x leverage may use CoinDCX's DYNAMIC ceiling. The concurrency
+        // exemption covers exactly the XAU/XAG group — same-pair duplicate
+        // protection still lives in executeMtfDualLiveOrder.
+        const metalsSym = metalsSymbolOf(order.symbol);
+        if (cfg?.metalsOnly === true && !metalsSym) {
+          return { ok: false, blocked: true, reason: `METALS-ONLY mode: ${order.symbol} is not XAU/XAG — live order refused`, error: 'metals-only scope' };
+        }
         return executeMtfDualLiveOrder({
           symbol: order.symbol,
           side: order.side,
@@ -1765,6 +1779,8 @@ export function registerAITradingRoutes(app, deps) {
           tier: order.row?.tier ?? null,
           mode: order.row?.mode || cfg?.mode || 'INTRADAY',
           source: 'mtf-auto-live',
+          allowMetalsLeverage: cfg?.metalsOnly === true && !!metalsSym,
+          allowConcurrentGroup: cfg?.metalsOnly === true ? ['XAU', 'XAG'] : null,
         });
       }
       if (order.market === 'INDIA') {
@@ -4420,10 +4436,20 @@ export function registerAITradingRoutes(app, deps) {
       const openRows = mtfAutoOpenRows();
       const openCount = openRows.length;
       const isLiveSession = cfg.executionMode === 'live';
-      // 1-session-1-trade lock (LIVE) / max positions (paper) — full tick
-      // inhe re-check karta hai; ye sirf FREE zero-cost bail-out hai.
-      if (isLiveSession && openCount >= 1) return;
-      if (openCount >= (cfg.maxOpenPositions || 3)) return;
+      // v21.36.9 [METALS-ONLY]: XAU + XAG are allowed to coexist. The probe's
+      // free bail-out must therefore allow up to metalsMaxConcurrent positions
+      // (and only metals rows) before escalating; legacy behaviour is intact.
+      const metalsMode = cfg.metalsOnly === true;
+      if (metalsMode) {
+        const metalsCap = Math.max(1, Number(cfg.metalsMaxConcurrent) || 2);
+        if (!openRows.every(b => metalsSymbolOf(b.symbol, b.market))) return;
+        if (openCount >= metalsCap) return;
+      } else {
+        // 1-session-1-trade lock (LIVE) / max positions (paper) — full tick
+        // inhe re-check karta hai; ye sirf FREE zero-cost bail-out hai.
+        if (isLiveSession && openCount >= 1) return;
+        if (openCount >= (cfg.maxOpenPositions || 3)) return;
+      }
       try { if (loadConfig()?.killSwitch === true) return; } catch { /* non-fatal */ }
       const warm = peekDualMtfBoards(8_000);
       if (!Array.isArray(warm) || warm.length === 0) return;
@@ -4433,21 +4459,31 @@ export function registerAITradingRoutes(app, deps) {
       // v21.23.10 [PROBE-PARITY]: probe sirf bd.rows scan karta tha —
       // metalsRows (XAU/XAG) + equitySimRows 10s ultra-fast path se bahar
       // the (tick pool me dono included hain). Ab teeno arrays.
-      const rowsOf = (bd) => [
-        ...(Array.isArray(bd?.rows) ? bd.rows : []),
-        ...(Array.isArray(bd?.metalsRows) ? bd.metalsRows : []),
-        ...(Array.isArray(bd?.equitySimRows) ? bd.equitySimRows : []),
-      ];
-      const hot = warm.some(bd => bd?.ok && rowsOf(bd).some(r =>
-        r?.ok
-        // v21.23.10 [THRASH-CURE]: backoff-me symbols par free escalation
-        // band — full tick inhe wapas skip karta hi tha (wasted deep work).
-        && !isLiveAttemptBackoffActive(r.symbol)
-        && (r.side === 'LONG' || r.side === 'SHORT')
-        && (r.tier === 'ELITE' || r.tier === 'STRONG' || Number(r.superScore) >= minScore)
-        && !(r.autoBlockers?.length)
-        && !openSyms.has(String(normalizeLinkSymbol(r.symbol, bd.market)).toUpperCase())
-      ));
+      // v21.36.9 [METALS-ONLY]: metals mode scans the UNFILTERED XAU/XAG
+      // rows (metalsRowsAll) and uses the exact PAKKA+trigger+score gate.
+      const rowsOf = (bd) => metalsMode
+        ? (Array.isArray(bd?.metalsRowsAll) ? bd.metalsRowsAll : (Array.isArray(bd?.metalsRows) ? bd.metalsRows : []))
+        : [
+            ...(Array.isArray(bd?.rows) ? bd.rows : []),
+            ...(Array.isArray(bd?.metalsRows) ? bd.metalsRows : []),
+            ...(Array.isArray(bd?.equitySimRows) ? bd.equitySimRows : []),
+          ];
+      const hot = warm.some(bd => bd?.ok && rowsOf(bd).some(r => {
+        if (metalsMode) {
+          return !!metalsSymbolOf(r?.symbol)
+            && !isLiveAttemptBackoffActive(r.symbol)
+            && metalsEntryGate(r, cfg).ok
+            && !openSyms.has(String(normalizeLinkSymbol(r?.symbol, 'CRYPTO')).toUpperCase());
+        }
+        return r?.ok
+          // v21.23.10 [THRASH-CURE]: backoff-me symbols par free escalation
+          // band — full tick inhe wapas skip karta hi tha (wasted deep work).
+          && !isLiveAttemptBackoffActive(r.symbol)
+          && (r.side === 'LONG' || r.side === 'SHORT')
+          && (r.tier === 'ELITE' || r.tier === 'STRONG' || Number(r.superScore) >= minScore)
+          && !(r.autoBlockers?.length)
+          && !openSyms.has(String(normalizeLinkSymbol(r.symbol, bd.market)).toUpperCase());
+      }));
       if (!hot) return;
       const now = Date.now();
       if (now - _lastProbeEscalateAt < 8_000) return; // 15s recheck ke saath stack nahi

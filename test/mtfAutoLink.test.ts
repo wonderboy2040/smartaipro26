@@ -25,6 +25,8 @@ import {
   mtfAutoTick, mtfAutoStatus, loadMtfAutoConfig, updateMtfAutoConfig,
   setMtfAutoEnabled, normalizeLinkSymbol, recordPaperMtfBoardTrade,
   isLiveSessionEntry, __resetMtfAutoForTests, __reloadMtfAutoForBoot, MTF_AUTO_DEFAULTS,
+  metalsSymbolOf, metalsLeverageFor, metalsEntryGate, metalsAutoCandidates,
+  syncCoinDcxActivePositionsToDeepMonitor,
 } from '../server/ai/mtfAutoLink.js';
 import { dayKeyFor } from '../server/intraday/time.js';
 
@@ -834,5 +836,221 @@ describe('mtfAutoLink — durable persistence + boot reload', () => {
     expect(st.enabled).toBe(false);
     expect(st.minScore).toBe(MTF_AUTO_DEFAULTS.minScore);
     expect(st.restoredFromDurable).toBe(false);
+  });
+});
+
+// ============================================================
+// v21.36.9 [METALS-ONLY XAU/XAG]
+// ------------------------------------------------------------
+// Operator contract: ONLY XAU (50x) + XAG (25x), live entry only when
+// PAKKA direction + triggerFired + superScore ≥ 75. Two metals positions may
+// coexist; no other symbol can ever be traded in this mode.
+// ============================================================
+describe('mtfAutoLink — v21.36.9 metals-only XAU/XAG lane', () => {
+  beforeEach(() => { __resetMtfAutoForTests(); });
+
+  function metalsRow(symbol, over = {}) {
+    return {
+      ok: true, symbol, market: 'METALS', mode: 'INTRADAY', label: '15m → 5m', holdMin: 45,
+      superScore: 82, tier: 'STRONG', side: 'LONG', dir: 1, grade: 'A',
+      directionVerified: true, directionVerdict: 'VERIFIED',
+      triggerFired: true, dualAligned: true, counterTrend: false, tfFit: 'OK',
+      // deliberately outside the generic candidate lane: the metals gate must
+      // ignore autoEligible/autoBlockers and use its exact PAKKA+trigger+score.
+      autoEligible: false, autoBlockers: ['generic availability noise'],
+      plan: { entry: 3900, stopLoss: 3861, t1: 3978, t2: 4056 },
+      ...over,
+    };
+  }
+  function metalsBoard(rows) {
+    return {
+      ok: true, market: 'CRYPTO', mode: 'INTRADAY', holdMin: 45, minScore: 75,
+      rows: [], metalsRows: [], metalsRowsAll: rows,
+    };
+  }
+  const liveCtx = () => ({ siteLiveByDesk: { crypto: true, india: false } });
+  const liveExec = () => vi.fn(async (order) => ({
+    ok: true, orderId: `ord-${order.symbol}`,
+    filled: {
+      qty: 0.1, price: order.entry,
+      stopLoss: order.stopLoss, t1: order.target1, t2: order.target2,
+    },
+    position: { id: `pos-${order.symbol}` },
+  }));
+
+  it('gate fires only on PAKKA + triggerFired + score ≥ 75', () => {
+    expect(metalsSymbolOf('B-XAU_USDT')).toBe('XAU');
+    expect(metalsSymbolOf('XAGUSDT')).toBe('XAG');
+    expect(metalsSymbolOf('BTC')).toBeNull();
+    expect(metalsLeverageFor(MTF_AUTO_DEFAULTS, 'XAU')).toBe(50);
+    expect(metalsLeverageFor(MTF_AUTO_DEFAULTS, 'XAG')).toBe(25);
+
+    expect(metalsEntryGate(metalsRow('XAU')).ok).toBe(true);
+    expect(metalsEntryGate(metalsRow('XAU', { triggerFired: false })).ok).toBe(false);
+    expect(metalsEntryGate(metalsRow('XAU', { directionVerified: false })).ok).toBe(false);
+    expect(metalsEntryGate(metalsRow('XAU', { trapVeto: true })).ok).toBe(false);
+    expect(metalsEntryGate(metalsRow('XAU', { superScore: 74 })).ok).toBe(false);
+    expect(metalsEntryGate(metalsRow('XAG', { superScore: 75 })).ok).toBe(true);
+  });
+
+  it('metalsAutoCandidates never lets a non-metals row through', () => {
+    const picks = metalsAutoCandidates(
+      [metalsRow('BTC'), metalsRow('XAU'), metalsRow('XAG', { triggerFired: false })],
+      MTF_AUTO_DEFAULTS,
+      { now: Date.now() },
+    );
+    // BTC is dropped entirely; blocked XAG stays visible for the near-miss line.
+    expect(picks.map(p => p.symbol)).toEqual(['XAU', 'XAG']);
+    expect(picks[0].autoPickBlockers).toEqual([]);
+    expect(picks[1].autoPickBlockers.join(' ')).toMatch(/trigger fire pending/);
+  });
+
+  it('LIVE: opens XAU 50x + XAG 25x together, ignores BTC, forces crypto desk', async () => {
+    __resetMtfAutoForTests({
+      config: {
+        enabled: true, executionMode: 'live', metalsOnly: true, minScore: 75,
+        walletAmountINR: 2584, desks: { india: true, crypto: true },
+      },
+    });
+    expect(loadMtfAutoConfig().desks).toEqual({ india: false, crypto: true });
+    const { paper, calls } = fakePaper();
+    const live = liveExec();
+    const out = await mtfAutoTick({
+      boards: { CRYPTO: metalsBoard([metalsRow('XAU'), metalsRow('XAG'), metalsRow('BTC')]) },
+      paper, liveExecute: live, ...liveCtx(), walletEquityINR: 2584, now: Date.now(),
+    });
+    expect(out.opened).toHaveLength(2);
+    expect(calls.opened.map(o => o.symbol)).toEqual(['XAU', 'XAG']);
+    expect(live).toHaveBeenCalledTimes(2);
+    const bySym = Object.fromEntries(live.mock.calls.map(([order]) => [order.symbol, order]));
+    expect(bySym.XAU.leverage).toBe(50);
+    expect(bySym.XAG.leverage).toBe(25);
+    // Wallet split: each metals row deploys at most 45% of the wallet.
+    expect(bySym.XAU.walletDeployPct).toBeLessThanOrEqual(45);
+    expect(bySym.XAG.walletDeployPct).toBeLessThanOrEqual(45);
+    const st = mtfAutoStatus();
+    expect(st.metalsOnly).toBe(true);
+    expect(st.metals.leverage).toEqual({ XAU: 50, XAG: 25 });
+    expect(st.note).toMatch(/METALS-ONLY/);
+  });
+
+  it('LIVE: a non-PAKKA XAU row is reported as a near-miss, never ordered', async () => {
+    __resetMtfAutoForTests({
+      config: { enabled: true, executionMode: 'live', metalsOnly: true, minScore: 75, walletAmountINR: 2584 },
+    });
+    const { paper, calls } = fakePaper();
+    const live = liveExec();
+    const out = await mtfAutoTick({
+      boards: { CRYPTO: metalsBoard([
+        metalsRow('XAU', { directionVerified: false, directionVerdict: 'WAIT-LONG', superScore: 60 }),
+      ]) },
+      paper, liveExecute: live, ...liveCtx(), walletEquityINR: 2584, now: Date.now(),
+    });
+    expect(out.opened).toHaveLength(0);
+    expect(calls.opened).toHaveLength(0);
+    expect(live).not.toHaveBeenCalled();
+    expect(out.skipped.join(' ')).toMatch(/METALS-ONLY/);
+    expect(out.skipped.join(' ')).toMatch(/direction not PAKKA|trigger fire pending|score/);
+  });
+
+  it('LIVE: second metals entry cannot exceed the metals concurrency cap', async () => {
+    const now = Date.now();
+    __resetMtfAutoForTests({
+      config: { enabled: true, executionMode: 'live', metalsOnly: true, minScore: 75, metalsMaxConcurrent: 1 },
+      state: {
+        book: [{
+          paperId: 201, liveOrderId: 'ord-xau', livePositionId: 'pos-xau',
+          symbol: 'XAU', market: 'CRYPTO', execMarket: 'FUTURES', side: 'LONG',
+          entry: 3900, stopLoss: 3861, t1: 3978, t2: 4056, qty: 0.1, notional: 390,
+          openedAt: now, status: 'OPEN', executionMode: 'LIVE', traded: true,
+        }],
+      },
+    });
+    const { paper, calls } = fakePaper();
+    const live = liveExec();
+    const out = await mtfAutoTick({
+      boards: { CRYPTO: metalsBoard([metalsRow('XAG')]) },
+      paper, liveExecute: live, ...liveCtx(), walletEquityINR: 2584, now,
+    });
+    expect(out.opened).toHaveLength(0);
+    expect(live).not.toHaveBeenCalled();
+    // cap=1 degenerates to the legacy 1-trade lock (multi-trade is OFF)
+    expect(out.skipped.join(' ')).toMatch(/1 session = 1 trade lock|multi-trade cap/);
+  });
+});
+
+// ============================================================
+// v21.36.10 [FALSE-CLOSE FIREWALL]
+// ------------------------------------------------------------
+// Live incident: XAG was still OPEN on CoinDCX (activePos -6.236, native
+// SL/TP armed) while a partial `/positions` snapshot made the deep-monitor
+// sync stamp its book row EXCHANGE_POSITION_CLOSED. Absence from a snapshot
+// is NOT flat evidence — only an explicit exchange row with activePos 0 is.
+// ============================================================
+describe('mtfAutoLink — v21.36.10 exchange reconciliation false-close firewall', () => {
+  const NOW = 1794579400000;
+
+  function seedOpenXag() {
+    __resetMtfAutoForTests({
+      config: { enabled: true, executionMode: 'live', metalsOnly: true, desks: { india: false, crypto: true } },
+      state: {
+        book: [{
+          paperId: 54, liveOrderId: 'ord-xag', livePositionId: 'pos-xag',
+          symbol: 'XAG', pair: 'B-XAG_USDT', market: 'CRYPTO', execMarket: 'FUTURES',
+          side: 'SHORT', entry: 49.77, stopLoss: 50.17, t1: 49.29, t2: 48.97,
+          qty: 6.236, notional: 31657.74, leverage: 25,
+          openedAt: NOW - 10 * 60_000, status: 'OPEN', executionMode: 'LIVE', traded: true,
+        }],
+      },
+    });
+  }
+  const xagRow = () => mtfAutoStatus().book.find(b => b.paperId === 54);
+
+  it('an EMPTY authoritative snapshot cannot close a still-open LIVE row', () => {
+    seedOpenXag();
+    syncCoinDcxActivePositionsToDeepMonitor([], {
+      authoritativeExchangeList: true, now: NOW,
+    });
+    expect(xagRow()?.status).toBe('OPEN');
+  });
+
+  it('a PARTIAL snapshot (other symbol present, XAG missing) cannot close XAG', () => {
+    seedOpenXag();
+    syncCoinDcxActivePositionsToDeepMonitor([
+      { id: 'pos-xau', pair: 'B-XAU_USDT', symbol: 'XAU', side: 'SHORT', qty: 0.1, entry: 3900, ltp: 3900, leverage: 50 },
+    ], {
+      authoritativeExchangeList: true,
+      // XAU's raw row is absent too, so no symbol has positive flat proof.
+      flatConfirmedSyms: [],
+      observedActiveSymbols: ['XAU'],
+      now: NOW,
+    });
+    expect(xagRow()?.status).toBe('OPEN');
+  });
+
+  it('an exchange-reported OPEN symbol (incomplete normalised row) protects its book row', () => {
+    seedOpenXag();
+    syncCoinDcxActivePositionsToDeepMonitor([], {
+      authoritativeExchangeList: true,
+      // raw /positions row had activePos != 0 but avgPrice/markPrice missing
+      flatConfirmedSyms: [],
+      observedActiveSymbols: ['XAG'],
+      now: NOW,
+    });
+    expect(xagRow()?.status).toBe('OPEN');
+  });
+
+  it('only an explicit exchange row with activePos 0 (flat proof) closes the row', () => {
+    seedOpenXag();
+    syncCoinDcxActivePositionsToDeepMonitor([], {
+      authoritativeExchangeList: true,
+      flatConfirmedSyms: ['XAG'],
+      observedActiveSymbols: [],
+      now: NOW,
+    });
+    const row = xagRow();
+    expect(row?.status).toBe('CLOSED');
+    expect(row?.closeReason).toBe('EXCHANGE_POSITION_CLOSED');
+    expect(row?.superAgentState).toBe('IDLE');
   });
 });

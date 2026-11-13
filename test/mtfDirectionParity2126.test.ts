@@ -77,8 +77,19 @@ describe('v21.26.0 A) direction parity — ensembleSignalAvailable requires side
 
   it('mtfAutoLink primary eligible lane explicitly blocks boardSideConflict', () => {
     const src = read('server/ai/mtfAutoLink.js');
-    const primary = src.slice(src.indexOf('let eligible = picks.filter'));
+    // v21.36.9: two lanes — the legacy/general filter keeps the explicit
+    // `&& !r.boardSideConflict` clause, and the metals-only lane blocks it in
+    // the PAKKA gate helper (`metalsEntryGate`). Both must stay hard.
+    const primary = src.slice(
+      src.indexOf('let eligible = metalsMode'),
+      src.indexOf('out.candidates += eligible.length'),
+    );
     expect(primary).toContain('&& !r.boardSideConflict');
+    const metalsGate = src.slice(
+      src.indexOf('export function metalsEntryGate'),
+      src.indexOf('export function metalsAutoCandidates'),
+    );
+    expect(metalsGate).toContain('row?.boardSideConflict !== true');
   });
 });
 
