@@ -108,6 +108,12 @@ import { eventGuardCheck } from './eventGuard.js';
 // signal par double-entry fire nahi hogi (idempotency tradeActionLog ke saath
 // complementary — ye SIGNAL-bar level par hai, wo ORDER-action level par).
 import { entryDedupKey, claimEntryDedup } from './signalLifecycle.js';
+// v21.37.0 [SIGNAL FIDELITY + LOSS-CHURN] — evidence-driven pre-entry gates.
+// signalFidelity.js documents the resolved-ledger basis (CHOP/TRANSITION,
+// familyFit=would-block, RSI dead-zone/exhaustion, unstable/pullback-less
+// signals, and the same-side churn after minimal-loss closes).
+import { evaluateSignalFidelity, evaluateLossChurnLock } from './signalFidelity.js';
+import { evaluateFamilyFit, evaluateHierarchicalMtf } from './signalFamilies.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.resolve(__dirname, '..', 'data');
@@ -344,6 +350,38 @@ export const MTF_AUTO_DEFAULTS = {
   stallExit: 'off',
   stallExitMin: 45,
   stallExitMinPeakR: 0.25,
+  // v21.37.0 [SIGNAL-FIDELITY GATE] — evidence-driven pre-entry filter built
+  // from 178 live-ish resolved ledger rows (directionVerified + score ≥75 +
+  // triggerFired, 2.8 days):
+  //   CHOP/TRANSITION ..... 29% win, avgR -0.32, 65% stop-hit
+  //   familyFit=block ..... 29% win, avgR -0.35, 65% stop-hit
+  //   RSI dead zone ....... 33% win, avgR -0.13
+  //   overbought LONG ..... 0/10 win
+  //   unstable signal ..... 39% win vs 53% stable
+  // Hard vetoes + ≥1 genuine soft confirmation. Missing evidence FAILS OPEN.
+  // Scope `live` keeps paper/site behaviour and backtests byte-identical;
+  // `all` applies it to paper too. Env: SIGNAL_FIDELITY / SIGNAL_FIDELITY_SCOPE.
+  signalFidelity: 'enforce',
+  signalFidelityScope: 'live',
+  signalFidelityMinSoft: 1,
+  signalFidelityAdxFloor: 20,
+  signalFidelityRsiLongMin: 55,
+  signalFidelityRsiLongMax: 75,
+  signalFidelityRsiShortMin: 25,
+  signalFidelityRsiShortMax: 45,
+  // v21.37.0 [LOSS-CHURN LOCK] — the book showed repeated same-price XAU/XAG
+  // same-side entries minutes after a non-profit close (each with tiny peakR).
+  // A same-side non-profit close now locks re-entry for `cooldownMin`; two
+  // non-profit closes within `windowMin` lock BOTH sides for `streakLockMin`.
+  // Profitable closes never lock; manual rows are ignored; a confirmed flip
+  // may bypass the single-loss lock but never the loss-streak lock.
+  // Scope `live` (paper untouched). Env: LOSS_CHURN_LOCK / LOSS_CHURN_SCOPE.
+  lossChurnLock: 'enforce',
+  lossChurnScope: 'live',
+  lossChurnCooldownMin: 20,
+  lossChurnWindowMin: 120,
+  lossChurnStreak: 2,
+  lossChurnStreakLockMin: 60,
 };
 // v21.23.8 flip churn guards — ek symbol ke liye din me sirf itni flip-reverse
 // entries (whipsaw market me zyada flip = fees + churn; protective minimal-loss
@@ -396,6 +434,17 @@ const CLAMPS = {
   // v21.35.5 late-wave gate thresholds
   lateWaveMaxProgressPct: [40, 99],
   lateWaveMinT1RemainR: [0.1, 3],
+  // v21.37.0 signal-fidelity + loss-churn thresholds
+  signalFidelityMinSoft: [0, 4],
+  signalFidelityAdxFloor: [0, 60],
+  signalFidelityRsiLongMin: [0, 100],
+  signalFidelityRsiLongMax: [0, 100],
+  signalFidelityRsiShortMin: [0, 100],
+  signalFidelityRsiShortMax: [0, 100],
+  lossChurnCooldownMin: [0, 1440],
+  lossChurnWindowMin: [5, 10080],
+  lossChurnStreak: [1, 20],
+  lossChurnStreakLockMin: [0, 10080],
 };
 const MODES = new Set(['INTRADAY', 'SWING', 'SCALP']);
 
@@ -596,6 +645,23 @@ function _sanitizeCfg(cfg) {
   out.breakoutConfirmGate = normalizeGuardMode(cfg.breakoutConfirmGate, 'enforce');
   // v21.35.5 [LATE-WAVE GATE] — v21.36.3: enforce default (same note).
   out.lateWaveGate = normalizeGuardMode(cfg.lateWaveGate, 'enforce');
+  // v21.37.0 [SIGNAL FIDELITY + LOSS-CHURN] — scope is a strict two-value
+  // allowlist: unknown/legacy values fall back to `live`, so paper and the
+  // site's manual lane can never be blocked by accident.
+  out.signalFidelity = normalizeGuardMode(cfg.signalFidelity, 'enforce');
+  out.signalFidelityScope = String(cfg.signalFidelityScope || 'live').trim().toLowerCase() === 'all' ? 'all' : 'live';
+  out.lossChurnLock = normalizeGuardMode(cfg.lossChurnLock, 'enforce');
+  out.lossChurnScope = String(cfg.lossChurnScope || 'live').trim().toLowerCase() === 'all' ? 'all' : 'live';
+  // A crossed RSI band would veto every entry; repair it to the documented
+  // defaults instead of silently bricking the lane.
+  if (!(out.signalFidelityRsiLongMin < out.signalFidelityRsiLongMax)) {
+    out.signalFidelityRsiLongMin = MTF_AUTO_DEFAULTS.signalFidelityRsiLongMin;
+    out.signalFidelityRsiLongMax = MTF_AUTO_DEFAULTS.signalFidelityRsiLongMax;
+  }
+  if (!(out.signalFidelityRsiShortMin < out.signalFidelityRsiShortMax)) {
+    out.signalFidelityRsiShortMin = MTF_AUTO_DEFAULTS.signalFidelityRsiShortMin;
+    out.signalFidelityRsiShortMax = MTF_AUTO_DEFAULTS.signalFidelityRsiShortMax;
+  }
   out.eventSessionFilterSessions = cfg.eventSessionFilterSessions !== false;
   out.regimeBlockChop = cfg.regimeBlockChop !== false;
   out.regimeBlockHighVol = cfg.regimeBlockHighVol === true;
@@ -907,6 +973,13 @@ export function mtfAutoGuardTelemetry(cfg = loadMtfAutoConfig()) {
       mcOddsGate: mcOddsGateMode(),
       breakoutConfirmGate: breakoutConfirmGateMode(),
       lateWaveGate: lateWaveGateMode(),
+      // v21.37.0 — evidence-driven pre-entry fidelity + loss-churn locks.
+      signalFidelity: signalFidelityMode(),
+      lossChurnLock: lossChurnLockMode(),
+    },
+    scopes: {
+      signalFidelity: String(cfg?.signalFidelityScope || 'live').toLowerCase() === 'all' ? 'all' : 'live',
+      lossChurnLock: String(cfg?.lossChurnScope || 'live').toLowerCase() === 'all' ? 'all' : 'live',
     },
     thresholds: {
       clusterGuardMax: Number(cfg?.clusterGuardMax) || 2,
@@ -924,6 +997,17 @@ export function mtfAutoGuardTelemetry(cfg = loadMtfAutoConfig()) {
       // v21.35.5 — late-wave / exhaustion gate knobs (clamped in _sanitizeCfg).
       lateWaveMaxProgressPct: Number(cfg?.lateWaveMaxProgressPct) >= 40 ? Number(cfg.lateWaveMaxProgressPct) : 85,
       lateWaveMinT1RemainR: Number(cfg?.lateWaveMinT1RemainR) > 0 ? Number(cfg.lateWaveMinT1RemainR) : 0.5,
+      // v21.37.0 — fidelity + churn knobs (clamped in _sanitizeCfg).
+      signalFidelityMinSoft: Number.isFinite(Number(cfg?.signalFidelityMinSoft)) ? Number(cfg.signalFidelityMinSoft) : 1,
+      signalFidelityAdxFloor: Number.isFinite(Number(cfg?.signalFidelityAdxFloor)) ? Number(cfg.signalFidelityAdxFloor) : 20,
+      signalFidelityRsiLongMin: Number.isFinite(Number(cfg?.signalFidelityRsiLongMin)) ? Number(cfg.signalFidelityRsiLongMin) : 55,
+      signalFidelityRsiLongMax: Number.isFinite(Number(cfg?.signalFidelityRsiLongMax)) ? Number(cfg.signalFidelityRsiLongMax) : 75,
+      signalFidelityRsiShortMin: Number.isFinite(Number(cfg?.signalFidelityRsiShortMin)) ? Number(cfg.signalFidelityRsiShortMin) : 25,
+      signalFidelityRsiShortMax: Number.isFinite(Number(cfg?.signalFidelityRsiShortMax)) ? Number(cfg.signalFidelityRsiShortMax) : 45,
+      lossChurnCooldownMin: Number.isFinite(Number(cfg?.lossChurnCooldownMin)) ? Number(cfg.lossChurnCooldownMin) : 20,
+      lossChurnWindowMin: Number.isFinite(Number(cfg?.lossChurnWindowMin)) ? Number(cfg.lossChurnWindowMin) : 120,
+      lossChurnStreak: Number.isFinite(Number(cfg?.lossChurnStreak)) ? Number(cfg.lossChurnStreak) : 2,
+      lossChurnStreakLockMin: Number.isFinite(Number(cfg?.lossChurnStreakLockMin)) ? Number(cfg.lossChurnStreakLockMin) : 60,
     },
     calibration,
     shadowHarness: harness,
@@ -1174,6 +1258,45 @@ export function breakoutConfirmGateMode() { return _guardMode('breakoutConfirmGa
 // v21.35.5 — late-wave / exhaustion gate (trend-end entry blocker). v21.36.3:
 // enforce default (same note). Env: LATE_WAVE_GATE.
 export function lateWaveGateMode() { return _guardMode('lateWaveGate', 'LATE_WAVE_GATE', 'enforce'); }
+// v21.37.0 [SIGNAL FIDELITY + LOSS-CHURN] — mode is env-overridable, scope is
+// persisted-config only (an env rehearsal must not silently widen a live gate
+// to paper). Both default to enforce + `live` scope.
+export function signalFidelityMode() { return _guardMode('signalFidelity', 'SIGNAL_FIDELITY', 'enforce'); }
+export function lossChurnLockMode() { return _guardMode('lossChurnLock', 'LOSS_CHURN_LOCK', 'enforce'); }
+
+/** True when a scoped gate applies to this tick. `live` never touches paper. */
+export function gateScopeApplies(scope, liveActive) {
+  const s = String(scope || 'live').trim().toLowerCase();
+  return s === 'all' || (s === 'live' && liveActive === true);
+}
+
+/**
+ * Build the family/HTF context the v21.37.0 fidelity gate needs from a board
+ * row. Uses the exact evaluators mtfDualBoard already runs for the ledger, so
+ * the live gate cannot drift from the recorded evidence.
+ */
+export function fidelityContextFor(row = {}) {
+  const meanRevEnabled = String(process.env.MEAN_REV_ENABLED || '').toLowerCase() === 'true';
+  let familyFit = null;
+  let hierarchicalMtf = null;
+  try {
+    familyFit = evaluateFamilyFit({
+      row, side: row?.side, family: row?.family, mode: 'enforce',
+      score: row?.superScore, meanRevEnabled,
+    });
+  } catch { familyFit = null; }
+  try {
+    const htfBias = String(row?.htfBias?.bias ?? row?.htfBias ?? '').toUpperCase();
+    hierarchicalMtf = evaluateHierarchicalMtf({
+      side: row?.side, htfBias,
+      contextDir: row?.context?.dir ?? null,
+      triggerDir: row?.trigger?.dir ?? null,
+      family: row?.family, mode: 'enforce',
+      score: row?.superScore ?? null,
+    });
+  } catch { hierarchicalMtf = null; }
+  return { familyFit, hierarchicalMtf, meanRevEnabled };
+}
 // v21.31.0 — per-call override exists for tests/shadow previews; otherwise env
 // wins over persisted config, matching the R3–R9 rollout convention.
 // v21.32.0 [G10]: fallback default enforce → shadow (LIVE-SMALL #1–#2 pending).
@@ -2967,6 +3090,10 @@ async function _tryOpenUcFlipReverse({ b, boardRow, ltp, p, cfg, out, now }) {
     // opposite row, but a NEW reverse position must clear the same hard
     // readiness gates as a manual/auto entry. Unverified / ensemble-warming /
     // counter-trend / vetoed rows can exit the old trade but never open one.
+    // v21.37.0: a reverse entry also needs a confirmed trigger OR a score at
+    // the >=75 evidence floor, and must not sit on an explicitly unstable
+    // closed bar (unknown stability stays fail-open).
+    const reverseScoreFloor = Math.max(75, Number(cfg?.minScore) || 75);
     const reverseReady = Boolean(
       boardRow
       && normalizeSide(boardRow.side) === side
@@ -2979,6 +3106,9 @@ async function _tryOpenUcFlipReverse({ b, boardRow, ltp, p, cfg, out, now }) {
       && !boardRow.zoneWallVeto
       && !boardRow.reversalRisk
       && boardRow.trigger?.opposingFlow !== true
+      && (boardRow.triggerFired === true || Number(boardRow.superScore) >= reverseScoreFloor)
+      && boardRow.barConfirmation?.stable !== false
+      && boardRow.signalStability?.stable !== false
     );
     if (!reverseReady) {
       _logEvent('flip-skip', `?? UC FLIP-REVERSE SKIP ${sym}: protective exit done, reverse entry blocked - direction/ensemble/auto readiness not verified`);
@@ -2987,6 +3117,42 @@ async function _tryOpenUcFlipReverse({ b, boardRow, ltp, p, cfg, out, now }) {
 
     const ticket = deriveUcFlipReverseTicket({ side, ltp, boardRow });
     if (!ticket) return null;
+
+    // v21.37.0 [FLIP-ENTRY FIDELITY + CHURN]: a protective exit is always
+    // allowed; the NEW reverse position must clear the same fidelity gate as
+    // the normal lane. Churn: a single-loss same-side lock is bypassed for a
+    // confirmed flip (this is a reversal, not churn) but the loss-streak lock
+    // always applies.
+    const fidMode = signalFidelityMode();
+    if (fidMode !== 'off' && gateScopeApplies(cfg.signalFidelityScope, priorWasLive)) {
+      const fidCtx = fidelityContextFor(boardRow);
+      const fid = evaluateSignalFidelity({
+        row: boardRow, side, mode: fidMode,
+        familyFit: fidCtx.familyFit, hierarchicalMtf: fidCtx.hierarchicalMtf,
+        cfg, meanRevEnabled: fidCtx.meanRevEnabled,
+      });
+      if (fid.blocked) {
+        _logEvent('flip-skip', `🔁 UC FLIP-REVERSE SKIP ${sym}: reverse fidelity — ${fid.reasons.join(' | ')}`);
+        return null;
+      }
+      if (fid.wouldBlock) {
+        _logEvent('fidelity-shadow', `${sym} flip-reverse: would-block — ${fid.reasons.join(' | ')}`);
+      }
+    }
+    const churnMode = lossChurnLockMode();
+    if (churnMode !== 'off' && gateScopeApplies(cfg.lossChurnScope, priorWasLive)) {
+      const churn = evaluateLossChurnLock({
+        symbol: sym, side, closedRows: _loadState().book, now, mode: churnMode,
+        cfg, flipConfirmed: true,
+      });
+      if (churn.locked) {
+        _logEvent('flip-skip', `🔁 UC FLIP-REVERSE SKIP ${sym}: ${churn.reason}`);
+        return null;
+      }
+      if (churn.wouldLock) {
+        _logEvent('churn-shadow', `${sym} flip-reverse: would-lock — ${churn.reason}`);
+      }
+    }
 
     // churn cap: din me sirf 4 flip-entries per symbol
     if (_ucFlipCountToday(sym, execMarket, now) >= UC_FLIP_MAX_PER_SYMBOL_PER_DAY) {
@@ -3957,13 +4123,18 @@ export async function mtfAutoTick(p = {}) {
               : []),
           ]
         : board.rows);
-    // When 0 positions are currently open in Live Auto mode, bypass stale symbol cooldown so user's Live Auto click always fires
-    const effectiveLastEntryAt = (isLiveExecActive && sessionOpen().length === 0) ? {} : stDay.perSymbolLast;
+    // v21.37.0 [COOLDOWN BYPASS REMOVED]: the old live-only
+    // `sessionOpen().length === 0` bypass skipped the per-symbol cooldown
+    // whenever nothing was open — exactly the window right after a close, so
+    // the same symbol re-entered minutes later (the XAU/XAG churn signature).
+    // The persisted per-symbol cooldown now always applies; the confirmed
+    // flip-reverse lane remains the one intentional immediate re-entry.
+    const effectiveLastEntryAt = stDay.perSymbolLast;
     // v21.23.10 [THRASH-CURE]: failed-LIVE-attempt per-symbol ESCALATING backoff
-    // (5m→10m→20m→…cap 4h) — success-cooldown bypass isse affect NAHI hota
-    // (user ka "Live Auto click always fires" intent intact), par ek REJECTED
-    // attempt (creds/arming/exchange error) ab symbol ko cooldown me daalta
-    // hai — pehle teen loops same reject har ~10s dohrate the.
+    // (5m→10m→20m→…cap 4h). v21.37.0: the old success-cooldown bypass is gone,
+    // so this backoff now stacks on top of the always-on per-symbol cooldown —
+    // a rejected attempt (creds/arming/exchange error) cannot be retried every
+    // ~10s by the three loops (10s probe / 15s recheck / 60s sweep).
     const failMap = stDay.failedLiveAttempts || {};
     // v21.35.7 [UNIVERSAL-LIVE FLOOR]: the candidate stage (dualAutoCandidates)
     // filters on cfg.minScore (75) — if the live floor is LOWER than that,
@@ -4459,6 +4630,75 @@ export async function mtfAutoTick(p = {}) {
         out.skipped.push(`${sym}: ${lossPause.reason}`);
         _logEvent('loss-streak-pause', `${sym}: ${lossPause.reason}`);
         continue;
+      }
+
+      // ---------- v21.37.0 [SIGNAL FIDELITY + LOSS-CHURN] ----------
+      // Two evidence-driven pre-entry gates (see signalFidelity.js):
+      //   • signalFidelity — hard vetoes (CHOP/TRANSITION, familyFit block,
+      //     HTF veto, RSI dead-zone/exhaustion, reversal/trap hints) + at
+      //     least one genuine soft confirmation (stable bar, ADX, pullback,
+      //     HTF agreement). Missing evidence fails open.
+      //   • lossChurnLock — a recent non-profit close locks the same side;
+      //     two non-profit closes lock both sides. Profitable closes never lock.
+      // Scope defaults to `live`; the paper lane stays byte-identical.
+      const fidMode = signalFidelityMode();
+      const churnMode = lossChurnLockMode();
+      const fidApplies = gateScopeApplies(cfg.signalFidelityScope, wantLiveOrder);
+      const churnApplies = gateScopeApplies(cfg.lossChurnScope, wantLiveOrder);
+      if (fidMode !== 'off' && fidApplies) {
+        const fidCtx = fidelityContextFor(row);
+        const fid = evaluateSignalFidelity({
+          row,
+          side: row.side,
+          mode: fidMode,
+          familyFit: fidCtx.familyFit,
+          hierarchicalMtf: fidCtx.hierarchicalMtf,
+          cfg,
+          meanRevEnabled: fidCtx.meanRevEnabled,
+        });
+        recordShadowDecision(guardState.shadowStats, {
+          filter: fid.filter, mode: fid.mode, wouldBlock: fid.wouldBlock,
+          reason: fid.reasons.join(' | ') || (fid.wouldBlock ? 'fidelity-would-block' : 'fidelity-pass'),
+          symbol: sym, market: guardDesk, at: now,
+        });
+        if (fid.wouldBlock) {
+          const why = fid.reasons.join(' | ');
+          if (fidMode === 'shadow') {
+            out.shadow.push({
+              symbol: sym, market: guardDesk,
+              warnings: [{ filter: fid.filter, mode: fid.mode, wouldBlock: true, reason: why }],
+            });
+            _logEvent('fidelity-shadow', `${sym}: would-block — ${why}`);
+          } else {
+            out.skipped.push(`${sym}: signal fidelity blocked — ${why}`);
+            _logEvent('fidelity-block', `${sym}: ${why} (regime ${fid.regime} · RSI ${fid.rsi ?? '—'} · ADX ${fid.adx ?? '—'} · stable ${fid.stable ?? '—'} · soft ${fid.softPoints}/${fid.availableSoft})`);
+            continue;
+          }
+        }
+      }
+      if (churnMode !== 'off' && churnApplies) {
+        const churn = evaluateLossChurnLock({
+          symbol: sym, side: row.side, closedRows: _loadState().book,
+          now, mode: churnMode, cfg, flipConfirmed: false,
+        });
+        recordShadowDecision(guardState.shadowStats, {
+          filter: churn.filter, mode: churn.mode, wouldBlock: churn.wouldLock,
+          reason: churn.reason || (churn.wouldLock ? 'loss-churn-would-lock' : 'loss-churn-clear'),
+          symbol: sym, market: guardDesk, at: now,
+        });
+        if (churn.wouldLock) {
+          if (churnMode === 'shadow') {
+            out.shadow.push({
+              symbol: sym, market: guardDesk,
+              warnings: [{ filter: churn.filter, mode: churn.mode, wouldBlock: true, reason: churn.reason }],
+            });
+            _logEvent('churn-shadow', `${sym}: would-lock — ${churn.reason}`);
+          } else {
+            out.skipped.push(`${sym}: loss-churn lock — ${churn.reason}`);
+            _logEvent('churn-block', `${sym}: ${churn.reason} (streak ${churn.lossStreak} · last ${churn.lastCloseReason ?? '—'})`);
+            continue;
+          }
+        }
       }
 
       // v21.23.7 ENTRY-STAMP: volatility class entry-time board context se —

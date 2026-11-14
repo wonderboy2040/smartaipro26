@@ -283,15 +283,27 @@ describe('v21.23.6 G1 — post-success 5-min cooldown on LIVE re-entry', () => {
     expect(paper.openPaperTrade).not.toHaveBeenCalled();
   });
 
-  it('LOSS close (SL_HIT, pnl<0) ≠ successful → NO cooldown, re-entry allowed', async () => {
+  it('LOSS close (SL_HIT, pnl<0) ≠ successful → NO post-success cooldown (v21.37.0 loss-churn lock alag hai)', async () => {
     __resetMtfAutoForTests({
-      config: cfg,
+      config: { ...cfg, lossChurnLock: 'off' },
       state: { book: [closedProfitRow(2, { pnl: -50, closeReason: 'SL_HIT' })] },
     });
     const { paper } = fakePaper();
     const out = await mtfAutoTick(liveP(paper, { liveExecute: liveExecuteOk(), siteLiveByDesk: { crypto: true, india: false } }));
     expect(out.skipped.join(' | ')).not.toMatch(/post-success cooldown/);
     expect(paper.openPaperTrade).toHaveBeenCalledTimes(1);
+  });
+
+  it('LOSS close (SL_HIT) live me same-side re-entry ko v21.37.0 loss-churn lock se rokti hai (cooldown nahi)', async () => {
+    __resetMtfAutoForTests({
+      config: cfg, // churn lock default enforce + live scope
+      state: { book: [closedProfitRow(2, { pnl: -50, closeReason: 'SL_HIT' })] },
+    });
+    const { paper } = fakePaper();
+    const out = await mtfAutoTick(liveP(paper, { liveExecute: liveExecuteOk(), siteLiveByDesk: { crypto: true, india: false } }));
+    expect(out.skipped.join(' | ')).not.toMatch(/post-success cooldown/);
+    expect(out.skipped.join(' | ')).toMatch(/loss-churn lock/);
+    expect(paper.openPaperTrade).not.toHaveBeenCalled();
   });
 
   it('PURGED_UNTRADED rows never count as success', async () => {
